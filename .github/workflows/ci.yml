@@ -41,7 +41,7 @@ jobs:
       ENCRYPTION_KEY: ci-test-encryption-key-32-bytes!
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v4
         with:
@@ -85,7 +85,7 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Gitleaks secret scan
         uses: gitleaks/gitleaks-action@v2
         env:
