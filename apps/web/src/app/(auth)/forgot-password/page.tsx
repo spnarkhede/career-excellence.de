@@ -29,7 +29,7 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
+    <form onSubmit={(e) => void handleSubmit(onSubmit)(e)} className="flex flex-col gap-4">
       <h1 className="text-2xl font-semibold">Forgot your password?</h1>
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="email">Email</Label>

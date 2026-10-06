@@ -1,0 +1,34 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreDependencies": [
+    "lint-staged",
+    // Used only via `declare module "express-serve-static-core"` augmentation (no
+    // import statement for knip to see) — see apps/api/src/common/request-id.middleware.ts
+    // and apps/api/src/auth/session.guard.ts.
+    "@types/express-serve-static-core"
+  ],
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/*.ts"],
+      "project": ["scripts/**/*.ts"]
+    },
+    "apps/web": {
+      "entry": ["src/app/**/{page,layout,route,middleware}.{ts,tsx}"],
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "apps/admin": {
+      "entry": ["src/app/**/{page,layout,route,middleware}.{ts,tsx}"],
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "apps/api": {
+      "entry": ["src/main.ts", "test/**/*.spec.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
+    },
+    "apps/worker": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/*": {
+      "project": ["src/**/*.{ts,tsx}"]
+    }
+  }
+}

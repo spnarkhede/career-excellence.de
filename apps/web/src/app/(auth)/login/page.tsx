@@ -38,7 +38,7 @@ function LoginForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
+    <form onSubmit={(e) => void handleSubmit(onSubmit)(e)} className="flex flex-col gap-4">
       <h1 className="text-2xl font-semibold">Log in</h1>
       <FormError message={formError ?? undefined} />
 

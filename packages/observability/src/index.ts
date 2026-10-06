@@ -8,11 +8,13 @@ const REDACT_PATHS = [
   "newPassword",
   "token",
   "code",
+  "otp",
   "refreshToken",
   "accessToken",
   "authorization",
   "*.password",
   "*.token",
+  "*.otp",
 ];
 
 export const logger = pino({

@@ -7,7 +7,7 @@ import {
 } from "@nestjs/common";
 import { StubAuthProvider, generateNumericOtp, issueOneTimeToken } from "@saas/auth";
 import { loadPrivateEnv } from "@saas/config";
-import { prisma } from "@saas/database";
+import { prisma, type Prisma } from "@saas/database";
 import {
   otpEmailTemplate,
   passwordResetEmailTemplate,
@@ -56,7 +56,7 @@ export class AuthService {
       data: {
         userId,
         type,
-        metadata,
+        metadata: metadata as Prisma.InputJsonValue,
         ipAddress: ctx.ipAddress,
         userAgent: ctx.userAgent,
       },

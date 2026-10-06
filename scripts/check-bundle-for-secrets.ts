@@ -2,16 +2,46 @@
 // environment variable NAMES. Never reads or prints values — this is a names-only check
 // for accidental leakage of a server secret identifier into browser-shipped code.
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { privateEnvSchema } from "../packages/config/src/index";
 
-const SENSITIVE_NAME_PATTERN = /SECRET|PASSWORD|PRIVATE|TOKEN|CREDENTIAL|API_KEY|ENCRYPTION_KEY/i;
+export const SENSITIVE_NAME_PATTERN =
+  /SECRET|PASSWORD|PRIVATE|TOKEN|CREDENTIAL|API_KEY|ENCRYPTION_KEY/i;
 
-const sensitiveNames = Object.keys(privateEnvSchema.shape).filter((name) =>
-  SENSITIVE_NAME_PATTERN.test(name),
-);
+export function getSensitiveNames(schemaShape: Record<string, unknown>): string[] {
+  return Object.keys(schemaShape).filter((name) => SENSITIVE_NAME_PATTERN.test(name));
+}
 
-const targetDirs = ["apps/web/.next", "apps/admin/.next"];
+export interface BundleFile {
+  path: string;
+  content: string;
+}
+
+export interface BundleLeak {
+  file: string;
+  name: string;
+}
+
+/** Pure scan: given bundle files and a list of sensitive variable names, returns every
+ * (file, name) pair where the name appears literally in the file's content. */
+export function findLeakedSecretNames(files: BundleFile[], sensitiveNames: string[]): BundleLeak[] {
+  const found: BundleLeak[] = [];
+  for (const file of files) {
+    for (const name of sensitiveNames) {
+      if (file.content.includes(name)) {
+        found.push({ file: file.path, name });
+      }
+    }
+  }
+  return found;
+}
+
+// Only `.next/static` is ever served to the browser. `.next/server` is Node-only SSR
+// output that legitimately bundles the env schema's variable *names* (as string keys,
+// never values) via the shared @saas/config import — scanning it produces false
+// positives on code that never reaches a client.
+const targetDirs = ["apps/web/.next/static", "apps/admin/.next/static"];
 
 function walk(dir: string, files: string[] = []): string[] {
   let entries;
@@ -28,30 +58,34 @@ function walk(dir: string, files: string[] = []): string[] {
   return files;
 }
 
-const found: { file: string; name: string }[] = [];
+function main() {
+  const sensitiveNames = getSensitiveNames(privateEnvSchema.shape);
+  const allFiles = targetDirs.flatMap((dir) => walk(dir));
+  const bundleFiles: BundleFile[] = allFiles.map((path) => ({
+    path,
+    content: readFileSync(path, "utf8"),
+  }));
+  const found = findLeakedSecretNames(bundleFiles, sensitiveNames);
 
-for (const dir of targetDirs) {
-  for (const file of walk(dir)) {
-    const content = readFileSync(file, "utf8");
-    for (const name of sensitiveNames) {
-      if (content.includes(name)) {
-        found.push({ file, name });
-      }
-    }
+  if (found.length > 0) {
+    console.error("Potential private environment variable name(s) found in client bundle output:");
+    for (const f of found) console.error(` - ${f.name} referenced in ${f.file}`);
+    console.error(
+      "\nInvestigate immediately — this indicates a server-only variable name is reachable from browser-shipped code.",
+    );
+    process.exit(1);
   }
-}
 
-if (found.length > 0) {
-  console.error("Potential private environment variable name(s) found in client bundle output:");
-  for (const f of found) console.error(` - ${f.name} referenced in ${f.file}`);
-  console.error(
-    "\nInvestigate immediately — this indicates a server-only variable name is reachable from browser-shipped code.",
+  console.log(
+    allFiles.length > 0
+      ? "check:bundle-secrets: no private environment variable names found in client bundle output."
+      : "check:bundle-secrets: no build output found to scan (run `pnpm build` first) — skipped.",
   );
-  process.exit(1);
 }
 
-console.log(
-  targetDirs.some((d) => walk(d).length > 0)
-    ? "check:bundle-secrets: no private environment variable names found in client bundle output."
-    : "check:bundle-secrets: no build output found to scan (run `pnpm build` first) — skipped.",
-);
+// Only run the CLI when executed directly (not when imported by a test). Resolves both
+// sides through path/URL helpers rather than comparing raw strings, so it works whether
+// argv[1] is relative or absolute, and regardless of path separator (Windows vs POSIX).
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main();
+}

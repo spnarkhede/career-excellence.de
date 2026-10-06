@@ -5,10 +5,16 @@ import { execSync } from "node:child_process";
 
 const PATTERNS = [
   { name: "AWS Access Key ID", regex: /AKIA[0-9A-Z]{16}/ },
-  { name: "Generic private key header", regex: /-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
+  {
+    name: "Generic private key header",
+    regex: /-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/,
+  },
   { name: "GitHub token", regex: /gh[pousr]_[A-Za-z0-9]{20,}/ },
   { name: "Slack token", regex: /xox[baprs]-[A-Za-z0-9-]{10,}/ },
-  { name: "JWT-looking token", regex: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
+  {
+    name: "JWT-looking token",
+    regex: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
+  },
   // Catches a quoted literal assigned directly to a credential-named field, but not an
   // env-var reference such as `process.env.PASSWORD`, which is the required pattern here.
   // The negative lookbehind excludes compound identifiers like `VerificationToken` or
@@ -22,7 +28,10 @@ const PATTERNS = [
 
 function getStagedFiles() {
   const output = execSync("git diff --cached --name-only --diff-filter=ACM", { encoding: "utf8" });
-  return output.split("\n").map((f) => f.trim()).filter(Boolean);
+  return output
+    .split("\n")
+    .map((f) => f.trim())
+    .filter(Boolean);
 }
 
 function main() {

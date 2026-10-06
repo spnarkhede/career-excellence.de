@@ -73,6 +73,18 @@ jobs:
       - name: Unit + integration tests
         run: pnpm test
 
+      - name: Circular dependency check
+        run: pnpm check:cycles
+
+      - name: Duplicate code check
+        run: pnpm check:duplicates
+
+      - name: Dead code / unused dependency check (informational)
+        # Real pre-existing findings exist (deps reserved for not-yet-wired features,
+        # per docs/auth/ARCHITECTURE.md's TanStack Query gap) that are out of scope to
+        # fix in this phase — reported, not yet a hard gate. See docs/auth/FINDINGS.md.
+        run: pnpm check:deadcode || true
+
       - name: Build
         run: pnpm build
 
@@ -81,6 +93,15 @@ jobs:
 
       - name: Dependency audit
         run: pnpm audit --audit-level=high || true
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+
+      - name: End-to-end tests
+        run: pnpm test:e2e
+        env:
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          NEXT_PUBLIC_API_URL: http://localhost:4000
 
   security-scan:
     runs-on: ubuntu-latest

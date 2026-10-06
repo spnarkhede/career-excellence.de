@@ -1,0 +1,18 @@
+{
+  "threshold": 5,
+  "reporters": ["console"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/.next/**",
+    "**/coverage/**",
+    "**/generated/**",
+    "**/*.spec.ts",
+    "**/next-env.d.ts",
+    "**/tsconfig.json",
+    "pnpm-lock.yaml",
+    "**/*.md"
+  ],
+  "absolute": true,
+  "gitignore": true
+}

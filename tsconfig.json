@@ -4,6 +4,7 @@
     "composite": false
   },
   "files": [],
+  "include": ["scripts/**/*.ts", "*.config.ts"],
   "references": [
     { "path": "apps/web" },
     { "path": "apps/api" },

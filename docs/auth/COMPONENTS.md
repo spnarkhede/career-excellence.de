@@ -24,6 +24,162 @@ Copy this block for new components discovered in later phases.
 8. **Whether it can create inconsistent state:**
 ```
 
+## Phase 2 components (scaffold and secure foundation)
+
+These are real, implemented components created or changed in Phase 2 — not planned
+entries. They sit outside the 17-item Authentication map checklist (which covers
+auth-specific pieces built from Phase 3 onward) but are the secure foundation Phase 2
+was scoped to deliver.
+
+### Environment config (`packages/config/src/index.ts`, `guard.ts`) — Implemented
+
+1. Validates every env var against a Zod schema at startup; separates public
+   (browser-safe) from private (server-only) schemas; `assertNoPublicSecretLeakage`
+   throws if a secret-shaped name is declared public, or a private name uses the
+   `NEXT_PUBLIC_` prefix.
+2. Called by `apps/api/src/main.ts`, `apps/web/src/lib/env.ts`, `apps/admin/src/lib/env.ts`.
+3. Calls nothing (pure validation).
+4. Receives `process.env`.
+5. Returns a typed, validated env object, or throws.
+6. On failure: throws synchronously with the variable name and validation message —
+   **never the value** — so the process never finishes booting with bad config.
+7. Secure: the guard specifically prevents a secret-shaped name ever being declared
+   public, closing off the "remove frontend secrets" checklist item at the config layer.
+8. No inconsistent state risk — pure functions, no I/O.
+
+### Bundle secret check (`scripts/check-bundle-for-secrets.ts`) — Implemented
+
+1. Scans `.next/static` output (the directory actually served to the browser, not
+   `.next/server`) for literal occurrences of private env var _names_.
+2. Called by `pnpm check:bundle-secrets` (CI, after `pnpm build`).
+3. Calls `privateEnvSchema.shape` (names only) and the filesystem.
+4. Receives built bundle files.
+5. Returns nothing; exits non-zero and prints file:name pairs if a leak is found.
+6. On failure: exits 1 with a clear message, no value ever printed.
+7. Secure: names-only, never reads/prints a value.
+8. No inconsistent state risk — read-only scan.
+9. **Bug found and fixed in this phase**: the original version scanned all of `.next/`,
+   including server-only SSR chunks that legitimately bundle the schema's variable
+   _names_ (as object keys) via the shared `@saas/config` import — producing false
+   positives on every real build and making the check useless as a CI gate. Root cause:
+   conflated "appears in `.next/`" with "served to the browser." Fixed by scanning only
+   `.next/static`. See FINDINGS.md BUG-001.
+
+### HTTPS redirect (`apps/api/src/common/https-redirect.middleware.ts`) — Implemented
+
+1. Redirects (308) a plain-HTTP request to HTTPS, only when `APP_ENV=production`.
+2. Called via `app.use(...)` in `apps/api/src/main.ts`, before any other middleware.
+3. Calls nothing; reads `req.secure` / `x-forwarded-proto`.
+4. Receives the Express request/response.
+5. Returns a redirect response, or calls `next()`.
+6. On failure: n/a — it's a pure conditional, no fallible operation.
+7. Secure: trusts `X-Forwarded-Proto` only because `app.set("trust proxy", 1)` is set in
+   production, matching the real load-balancer topology.
+8. No inconsistent state risk.
+
+### Security headers (`apps/api/src/common/security-headers.middleware.ts`, `@saas/security`) — Implemented
+
+1. Sets CSP (per-request nonce, no `unsafe-inline`), `X-Content-Type-Options: nosniff`,
+   `Referrer-Policy: strict-origin-when-cross-origin`, `frame-ancestors 'none'`,
+   `Permissions-Policy`, and HSTS (production only) on every response.
+2. Called via `app.use(...)` in `main.ts`.
+3. Calls `@saas/security`'s `buildSecurityHeaders`/`generateNonce`.
+4. Receives the Express request/response; writes `res.locals.nonce` for templates.
+5. Returns via `res.setHeader(...)`, then `next()`.
+6. On failure: n/a — header-setting can't meaningfully fail.
+7. Secure: this is the literal implementation of the checklist's "Security headers"
+   item; `/docs` (Swagger, dev-only) is deliberately exempted since its vendored HTML
+   ships inline scripts that can't be nonce'd.
+8. No inconsistent state risk.
+
+### CORS allowlist (`apps/api/src/common/cors.ts`) — Implemented
+
+1. Builds CORS options from an explicit origin allowlist (`API_CORS_ALLOWED_ORIGINS`);
+   never combines a wildcard with `credentials: true`.
+2. Called by `apps/api/src/main.ts` (`app.enableCors(...)`) and the test suite (bare
+   Express + `cors()`).
+3. Calls `@saas/security`'s `isOriginAllowed`.
+4. Receives the request `Origin` header.
+5. Returns `callback(null, true/false)` — never throws, so a disallowed origin fails
+   closed (no CORS headers) rather than a 500.
+6. On failure (disallowed origin): no CORS headers are sent; the browser blocks the
+   response, the server still returns 200 (correct — CORS is a browser-enforced
+   control, not a server authorization boundary).
+7. Secure: this is the literal "CORS allowlist, never a wildcard with credentials"
+   checklist item.
+8. No inconsistent state risk.
+9. **Bug found and fixed in this phase**: previously typed against the `cors` npm
+   package's own `CorsOptions`, which structurally conflicts with `@nestjs/common`'s
+   duplicate interface (`boolean` vs `string|RegExp` for `origin`), making
+   `app.enableCors(buildCorsOptions(...))` fail `tsc --noEmit`. Fixed by dropping the
+   conflicting type import — the returned object still matches both libraries
+   structurally; only the type annotation was wrong. See FINDINGS.md BUG-002.
+
+### Structured logger with redaction (`@saas/observability`) — Implemented
+
+1. Pino logger with request-ID child loggers; redacts `authorization`, `cookie`,
+   `set-cookie`, `password`, `token`, `secret`, `refresh`, `code`, `otp`, `apikey` at
+   any depth, via both pino's static `redact.paths` and a `deepRedact` hook that walks
+   every log argument before serialization.
+2. Called by `apps/api/src/main.ts`, `apps/worker/src/main.ts`, and anywhere importing
+   `logger` from `@saas/observability`.
+3. Calls `deepRedact` (pure recursive walk).
+4. Receives arbitrary log payloads.
+5. Returns redacted payloads to pino's serializer.
+6. On failure: n/a — redaction can't throw; `deepRedact` caps recursion depth at 20 to
+   avoid a pathological/cyclic object hanging the logger.
+7. Secure: this is the literal "redaction at any depth" checklist item, including the
+   previously-missing `otp` key, added and tested in this phase.
+8. No inconsistent state risk.
+
+### Global unhandled-rejection / uncaught-exception handlers (`apps/api/src/main.ts`, `apps/worker/src/main.ts`) — Implemented
+
+1. Logs (via the redacting logger) any unhandled promise rejection or uncaught
+   exception at the process level, instead of letting Node crash silently or dump a raw
+   object to stderr.
+2. Registered once at process startup, before `bootstrap()`.
+3. Calls `logger.error`.
+4. Receives the rejection reason / exception object.
+5. Returns nothing; an uncaught exception still exits the process (`process.exit(1)`)
+   after logging — a crashed process should not keep serving requests in a broken
+   state, but it must log safely on the way out.
+6. On failure: n/a — this _is_ the failure handler.
+7. Secure: routes through the same redacting logger, so a thrown error that happens to
+   contain a token/password in its message/stack is still redacted by `deepRedact`'s
+   key-based matching wherever the error is a plain object; a raw `Error`'s `.message`
+   string itself is not pattern-scanned, which is a known limitation — see
+   FINDINGS.md BUG-003.
+8. No inconsistent state risk — logging only.
+
+### Quality tooling (`eslint.config.js`, `knip.json`, `.jscpd.json`, `check:cycles`) — Implemented
+
+1. `eslint.config.js`: adds `no-floating-promises`, `no-misused-promises`,
+   `await-thenable`, `no-deprecated` (typed, via `projectService`), plus
+   `react-hooks/rules-of-hooks` and `react-hooks/exhaustive-deps` for `apps/web`,
+   `apps/admin`, `packages/ui`. `knip.json`: dead-code/unused-dependency detection.
+   `.jscpd.json` + `madge`: duplicate-code and circular-dependency detection.
+2. Called by `pnpm lint`, `pnpm check:deadcode`, `pnpm check:duplicates`,
+   `pnpm check:cycles`, and CI.
+3. Calls nothing at runtime — static analysis only.
+4. Receives the TypeScript/TSX source tree.
+5. Returns lint diagnostics / clone reports / dependency graphs.
+6. On failure: `check:cycles` and `check:duplicates` are hard CI gates (both pass
+   clean). `check:deadcode` (knip) surfaces real, pre-existing findings (dependencies
+   reserved for not-yet-wired features per `ARCHITECTURE.md`'s TanStack Query gap,
+   e.g. `@tanstack/react-query`/`zod`/`zustand` in `apps/web`) that are **out of scope
+   to remove in this phase** — wired as informational (`|| true`) rather than a hard
+   gate, to avoid silently modifying unrelated functionality per `AUTH_RULES.md` rule 7.
+   See FINDINGS.md for the full list.
+7. Secure: `no-floating-promises`/`no-misused-promises` directly catch the class of bug
+   where an auth form's async submit handler is silently dropped by React/DOM — this
+   phase's own type-checked lint pass found and fixed exactly that in all 4 auth forms
+   (login, signup, forgot-password, reset-password) before any auth logic exists yet.
+8. No inconsistent state risk.
+9. **Bug found and fixed in this phase**: `packages/auth/src/index.ts` and
+   `stub-provider.ts` had a circular import (barrel re-exporting a file that imports
+   back from the barrel). Fixed by extracting the shared interfaces into
+   `packages/auth/src/types.ts`. See FINDINGS.md BUG-004.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

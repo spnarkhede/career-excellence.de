@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-07
+
+### Added
+
+- `apps/api/test/https-redirect.spec.ts`: tests for the production-only HTTP→HTTPS
+  redirect (test requirement 5 for this phase).
+- `scripts/check-bundle-for-secrets.spec.ts`: unit tests for the bundle-secret-leak
+  scanner's pure logic (test requirement 6).
+- `"otp"` added to the structured logger's redaction key list (both the pure
+  `deepRedact` walk and pino's static `redact.paths`), with a test.
+- Global `unhandledRejection`/`uncaughtException` handlers in `apps/api` and
+  `apps/worker`, logging safely through the redacting logger.
+- Quality tooling: `knip.json` (dead code/unused dependencies), `.jscpd.json` +
+  `madge` (duplicate code / circular dependency detection), stricter
+  `eslint.config.js` (`no-floating-promises`, `no-misused-promises`,
+  `await-thenable`, `no-deprecated`, React Hooks rules for `apps/web`/`apps/admin`).
+- `playwright.config.ts`: Firefox, WebKit, and a mobile-viewport project, alongside
+  the existing Chromium project.
+- CI: circular-dependency check, duplicate-code check, dead-code check
+  (informational), Playwright end-to-end test run.
+- `packages/security/server/package.json`: a classic-resolution subpath shim so
+  `apps/api` (which uses `moduleResolution: "Node"`) can resolve `@saas/security/server`.
+- `vitest.scripts.config.ts`: a dedicated, non-auto-discovered Vitest config so
+  root-level `scripts/` tests run without interfering with every workspace package's
+  own `vitest run`.
+
+### Fixed
+
+- **BUG-001**: the client-bundle secret scanner scanned all of `.next/` (including
+  server-only SSR output that legitimately bundles private env var names), making it
+  fail on every real build. Narrowed to `.next/static`.
+- **BUG-002**: `apps/api` failed `tsc --noEmit` (pre-existing, confirmed via a
+  `git stash` bisect) due to a `CorsOptions` type conflict between the `cors` and
+  `@nestjs/common` packages, an unresolvable `express-serve-static-core` module
+  augmentation (undeclared transitive type dependency), and a Prisma `Json` type
+  mismatch.
+- **BUG-004**: a circular import between `packages/auth/src/index.ts` and
+  `stub-provider.ts`; extracted shared interfaces into `packages/auth/src/types.ts`.
+- **BUG-005**: all 4 auth forms (login, signup, forgot-password, reset-password)
+  passed an async handler directly to `<form onSubmit>`, flagged by the newly-added
+  `no-misused-promises` rule; now explicitly voided.
+
+### Notes
+
+- `knip` (`pnpm check:deadcode`) reports real, pre-existing unused dependencies/exports
+  — mostly reserved for not-yet-wired features documented in
+  `docs/auth/ARCHITECTURE.md`. Wired into CI as informational only; not fixed in this
+  phase to avoid unrelated-scope changes.
+
 ## [0.2.0] - 2026-10-06
 
 ### Added
@@ -48,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and creates a git tag.
 - References to AUTH_RULES.md from CLAUDE.md and AGENTS.md.
 
-[Unreleased]: https://example.com/compare/v0.2.0...HEAD
+[Unreleased]: https://example.com/compare/v0.3.0...HEAD
+[0.3.0]: https://example.com/compare/v0.2.0...v0.3.0
 [0.2.0]: https://example.com/compare/v0.1.0...v0.2.0
 [0.1.0]: https://example.com/releases/tag/v0.1.0

@@ -13,6 +13,7 @@ describe("deepRedact", () => {
       refresh: "r",
       code: "123456",
       apiKey: "sk_live_x", // secret-scan-ignore-line: fake fixture, asserts redaction
+      otp: "654321",
     };
     const result = deepRedact(input) as Record<string, string>;
     for (const key of Object.keys(input)) {

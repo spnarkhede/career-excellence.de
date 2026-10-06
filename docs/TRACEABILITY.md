@@ -86,10 +86,10 @@ in AUTH_RULES.md rule 13. All items start as "Not started" until implemented and
 
 ## LAUNCH: SECURITY BASICS (Phase 2)
 
-| Item                       | Phase | Implementing files | Tests | Status      | Notes |
-| -------------------------- | ----- | ------------------ | ----- | ----------- | ----- |
-| 1. Remove frontend secrets | 2     |                    |       | Not started |       |
-| 2. Enforce HTTPS           | 2     |                    |       | Not started |       |
+| Item                       | Phase | Implementing files                                                                                                    | Tests                                                                                                  | Status            | Notes                                                                                                                                                                                                                                             |
+| -------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Remove frontend secrets | 2     | packages/config/src/guard.ts, scripts/check-bundle-for-secrets.ts, apps/web/src/lib/env.ts, apps/admin/src/lib/env.ts | scripts/check-bundle-for-secrets.spec.ts; `pnpm check:bundle-secrets` against real `pnpm build` output | Confirmed working | Fixed a real bug: the script scanned all of `.next/` (including server-only SSR chunks, which legitimately bundle private var _names_), producing false positives. Narrowed to `.next/static` only, the directory actually served to the browser. |
+| 2. Enforce HTTPS           | 2     | apps/api/src/common/https-redirect.middleware.ts                                                                      | apps/api/test/https-redirect.spec.ts (3 tests)                                                         | Confirmed working | Redirects to HTTPS (308) only when `APP_ENV=production`; trusts `X-Forwarded-Proto` behind the load balancer.                                                                                                                                     |
 
 ## DATABASE TABLES AND DATA CONNECTIONS (Phase 3)
 

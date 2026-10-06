@@ -13,6 +13,18 @@ import { createHttpsRedirectMiddleware } from "./common/https-redirect.middlewar
 import { RequestIdMiddleware } from "./common/request-id.middleware.js";
 import { createSecurityHeadersMiddleware } from "./common/security-headers.middleware.js";
 
+// Registered before bootstrap so a crash during startup is still logged safely (with
+// secret redaction via the logger's deepRedact hook) rather than dumping a raw object
+// to stderr or letting the process die silently.
+process.on("unhandledRejection", (reason) => {
+  logger.error({ reason }, "Unhandled promise rejection");
+});
+
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "Uncaught exception");
+  process.exit(1);
+});
+
 async function bootstrap() {
   const env = loadPrivateEnv();
   const isProduction = env.APP_ENV === "production";

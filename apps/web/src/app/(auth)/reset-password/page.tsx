@@ -34,7 +34,7 @@ function ResetPasswordForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
+    <form onSubmit={(e) => void handleSubmit(onSubmit)(e)} className="flex flex-col gap-4">
       <h1 className="text-2xl font-semibold">Set a new password</h1>
       <FormError message={formError ?? undefined} />
       <input type="hidden" {...register("token")} />

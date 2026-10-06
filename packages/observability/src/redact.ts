@@ -12,6 +12,7 @@ const SENSITIVE_KEYS = new Set([
   "refresh",
   "code",
   "apikey",
+  "otp",
 ]);
 
 function normalizeKey(key: string): string {
