@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-06
+
+### Added
+
+- docs/auth/ARCHITECTURE.md: added "Project layout" (folder structure, module
+  boundaries, layer ownership) and "Data connection diagram" (every table, FK, and
+  which component reads/writes it) sections; added decision D10 and open question 9
+  on database-level row-level security.
+- docs/auth/FLOWS.md: Mermaid sequence diagrams for all 8 auth lifecycles (login,
+  logout, refresh, signup, verification, password reset, OAuth, session expiration),
+  each with failure branches and the HTTP status code produced.
+- docs/auth/COMPONENTS.md: rewritten with a "Planned" entry, answering all 8
+  component questions, for every item in the Authentication map checklist.
+- docs/TRACEABILITY.md: filled in implementing files, tests, and status for every
+  Phase 1 checklist item (System understanding, Lifecycle tracing, Authentication
+  map), all marked "Requires manual verification" pending human confirmation.
+
+### Notes
+
+- No application code was written in this phase.
+- Human confirmation of 9 open questions (listed in docs/auth/ARCHITECTURE.md and
+  docs/auth/PROGRESS.md) is required before Phase 2 begins.
+
 ## [0.1.0] - 2026-10-06
 
 ### Added
@@ -25,5 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and creates a git tag.
 - References to AUTH_RULES.md from CLAUDE.md and AGENTS.md.
 
-[Unreleased]: https://example.com/compare/v0.1.0...HEAD
+[Unreleased]: https://example.com/compare/v0.2.0...HEAD
+[0.2.0]: https://example.com/compare/v0.1.0...v0.2.0
 [0.1.0]: https://example.com/releases/tag/v0.1.0

@@ -13,76 +13,76 @@ in AUTH_RULES.md rule 13. All items start as "Not started" until implemented and
 
 ## SYSTEM UNDERSTANDING (Phase 1)
 
-| Item                                        | Phase | Implementing files | Tests | Status      | Notes |
-| ------------------------------------------- | ----- | ------------------ | ----- | ----------- | ----- |
-| 1. Frontend framework                       | 1     |                    |       | Not started |       |
-| 2. Backend architecture                     | 1     |                    |       | Not started |       |
-| 3. Database                                 | 1     |                    |       | Not started |       |
-| 4. Authentication provider                  | 1     |                    |       | Not started |       |
-| 5. API architecture                         | 1     |                    |       | Not started |       |
-| 6. Session architecture                     | 1     |                    |       | Not started |       |
-| 7. Cookies                                  | 1     |                    |       | Not started |       |
-| 8. Tokens                                   | 1     |                    |       | Not started |       |
-| 9. JWT handling                             | 1     |                    |       | Not started |       |
-| 10. Refresh tokens                          | 1     |                    |       | Not started |       |
-| 11. OAuth/social login                      | 1     |                    |       | Not started |       |
-| 12. Email/password authentication           | 1     |                    |       | Not started |       |
-| 13. OTP authentication                      | 1     |                    |       | Not started |       |
-| 14. Email verification                      | 1     |                    |       | Not started |       |
-| 15. Password reset                          | 1     |                    |       | Not started |       |
-| 16. Session persistence                     | 1     |                    |       | Not started |       |
-| 17. Middleware                              | 1     |                    |       | Not started |       |
-| 18. Protected routes                        | 1     |                    |       | Not started |       |
-| 19. Role-based access                       | 1     |                    |       | Not started |       |
-| 20. Permission system                       | 1     |                    |       | Not started |       |
-| 21. User profile creation                   | 1     |                    |       | Not started |       |
-| 22. Database triggers/functions             | 1     |                    |       | Not started |       |
-| 23. Environment variables                   | 1     |                    |       | Not started |       |
-| 24. Production configuration                | 1     |                    |       | Not started |       |
-| 25. Development configuration               | 1     |                    |       | Not started |       |
-| 26. Deployment configuration                | 1     |                    |       | Not started |       |
-| 27. CORS                                    | 1     |                    |       | Not started |       |
-| 28. CSP                                     | 1     |                    |       | Not started |       |
-| 29. Redirect URLs                           | 1     |                    |       | Not started |       |
-| 30. Domain configuration                    | 1     |                    |       | Not started |       |
-| 31. HTTPS configuration                     | 1     |                    |       | Not started |       |
-| 32. Storage/auth dependencies               | 1     |                    |       | Not started |       |
-| 33. Third-party authentication integrations | 1     |                    |       | Not started |       |
+| Item                                        | Phase | Implementing files        | Tests                        | Status                       | Notes |
+| ------------------------------------------- | ----- | ------------------------- | ---------------------------- | ---------------------------- | ----- |
+| 1. Frontend framework                       | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 2. Backend architecture                     | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 3. Database                                 | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 4. Authentication provider                  | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 5. API architecture                         | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 6. Session architecture                     | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 7. Cookies                                  | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 8. Tokens                                   | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 9. JWT handling                             | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 10. Refresh tokens                          | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 11. OAuth/social login                      | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 12. Email/password authentication           | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 13. OTP authentication                      | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 14. Email verification                      | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 15. Password reset                          | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 16. Session persistence                     | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 17. Middleware                              | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 18. Protected routes                        | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 19. Role-based access                       | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 20. Permission system                       | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 21. User profile creation                   | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 22. Database triggers/functions             | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 23. Environment variables                   | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 24. Production configuration                | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 25. Development configuration               | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 26. Deployment configuration                | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 27. CORS                                    | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 28. CSP                                     | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 29. Redirect URLs                           | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 30. Domain configuration                    | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 31. HTTPS configuration                     | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 32. Storage/auth dependencies               | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
+| 33. Third-party authentication integrations | 1     | docs/auth/ARCHITECTURE.md | Requires manual verification | Requires manual verification |       |
 
 ## LIFECYCLE TRACING (Phase 1)
 
-| Item                                                                                                                                                                                                                | Phase | Implementing files | Tests | Status      | Notes |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------ | ----- | ----------- | ----- |
-| 1. Login lifecycle: User → Login UI → Validation → Authentication request → Backend/Auth provider → Database → Session/token creation → Storage → Auth state → Application state → Protected route → User dashboard | 1     |                    |       | Not started |       |
-| 2. Logout lifecycle                                                                                                                                                                                                 | 1     |                    |       | Not started |       |
-| 3. Refresh lifecycle                                                                                                                                                                                                | 1     |                    |       | Not started |       |
-| 4. Signup lifecycle                                                                                                                                                                                                 | 1     |                    |       | Not started |       |
-| 5. Verification lifecycle                                                                                                                                                                                           | 1     |                    |       | Not started |       |
-| 6. Password reset lifecycle                                                                                                                                                                                         | 1     |                    |       | Not started |       |
-| 7. OAuth lifecycle                                                                                                                                                                                                  | 1     |                    |       | Not started |       |
-| 8. Session expiration lifecycle                                                                                                                                                                                     | 1     |                    |       | Not started |       |
+| Item                                                                                                                                                                                                                | Phase | Implementing files                               | Tests                        | Status                       | Notes |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------ | ---------------------------- | ---------------------------- | ----- |
+| 1. Login lifecycle: User → Login UI → Validation → Authentication request → Backend/Auth provider → Database → Session/token creation → Storage → Auth state → Application state → Protected route → User dashboard | 1     | docs/auth/FLOWS.md, docs/auth/ARCHITECTURE.md §2 | Requires manual verification | Requires manual verification |       |
+| 2. Logout lifecycle                                                                                                                                                                                                 | 1     | docs/auth/FLOWS.md, docs/auth/ARCHITECTURE.md §2 | Requires manual verification | Requires manual verification |       |
+| 3. Refresh lifecycle                                                                                                                                                                                                | 1     | docs/auth/FLOWS.md, docs/auth/ARCHITECTURE.md §2 | Requires manual verification | Requires manual verification |       |
+| 4. Signup lifecycle                                                                                                                                                                                                 | 1     | docs/auth/FLOWS.md, docs/auth/ARCHITECTURE.md §2 | Requires manual verification | Requires manual verification |       |
+| 5. Verification lifecycle                                                                                                                                                                                           | 1     | docs/auth/FLOWS.md, docs/auth/ARCHITECTURE.md §2 | Requires manual verification | Requires manual verification |       |
+| 6. Password reset lifecycle                                                                                                                                                                                         | 1     | docs/auth/FLOWS.md, docs/auth/ARCHITECTURE.md §2 | Requires manual verification | Requires manual verification |       |
+| 7. OAuth lifecycle                                                                                                                                                                                                  | 1     | docs/auth/FLOWS.md, docs/auth/ARCHITECTURE.md §2 | Requires manual verification | Requires manual verification |       |
+| 8. Session expiration lifecycle                                                                                                                                                                                     | 1     | docs/auth/FLOWS.md, docs/auth/ARCHITECTURE.md §2 | Requires manual verification | Requires manual verification |       |
 
 ## AUTHENTICATION MAP COMPONENTS (Phase 1)
 
-| Item                                           | Phase | Implementing files | Tests | Status      | Notes |
-| ---------------------------------------------- | ----- | ------------------ | ----- | ----------- | ----- |
-| 1. Every login page                            | 1     |                    |       | Not started |       |
-| 2. Every login component                       | 1     |                    |       | Not started |       |
-| 3. Every authentication function               | 1     |                    |       | Not started |       |
-| 4. Every API endpoint                          | 1     |                    |       | Not started |       |
-| 5. Every server action                         | 1     |                    |       | Not started |       |
-| 6. Every auth hook                             | 1     |                    |       | Not started |       |
-| 7. Every auth context/provider                 | 1     |                    |       | Not started |       |
-| 8. Every middleware                            | 1     |                    |       | Not started |       |
-| 9. Every protected route                       | 1     |                    |       | Not started |       |
-| 10. Every redirect                             | 1     |                    |       | Not started |       |
-| 11. Every token/session handler                | 1     |                    |       | Not started |       |
-| 12. Every database table related to users/auth | 1     |                    |       | Not started |       |
-| 13. Every database policy                      | 1     |                    |       | Not started |       |
-| 14. Every trigger                              | 1     |                    |       | Not started |       |
-| 15. Every edge/server function                 | 1     |                    |       | Not started |       |
-| 16. Every environment variable                 | 1     |                    |       | Not started |       |
-| 17. Every external authentication dependency   | 1     |                    |       | Not started |       |
+| Item                                           | Phase | Implementing files      | Tests                        | Status                       | Notes |
+| ---------------------------------------------- | ----- | ----------------------- | ---------------------------- | ---------------------------- | ----- |
+| 1. Every login page                            | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 2. Every login component                       | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 3. Every authentication function               | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 4. Every API endpoint                          | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 5. Every server action                         | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 6. Every auth hook                             | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 7. Every auth context/provider                 | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 8. Every middleware                            | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 9. Every protected route                       | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 10. Every redirect                             | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 11. Every token/session handler                | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 12. Every database table related to users/auth | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 13. Every database policy                      | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 14. Every trigger                              | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 15. Every edge/server function                 | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 16. Every environment variable                 | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
+| 17. Every external authentication dependency   | 1     | docs/auth/COMPONENTS.md | Requires manual verification | Requires manual verification |       |
 
 ## LAUNCH: SECURITY BASICS (Phase 2)
 
