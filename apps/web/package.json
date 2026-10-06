@@ -1,0 +1,41 @@
+{
+  "name": "@saas/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev --port 3000",
+    "start": "next start --port 3000",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf .next"
+  },
+  "dependencies": {
+    "@hookform/resolvers": "^3.9.1",
+    "@saas/analytics": "workspace:*",
+    "@saas/api-client": "workspace:*",
+    "@saas/config": "workspace:*",
+    "@saas/contracts": "workspace:*",
+    "@saas/design-tokens": "workspace:*",
+    "@saas/security": "workspace:*",
+    "@saas/ui": "workspace:*",
+    "@saas/validation": "workspace:*",
+    "@tanstack/react-query": "^5.62.7",
+    "next": "^15.1.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-hook-form": "^7.54.1",
+    "zod": "^3.24.1",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.1",
+    "@types/react-dom": "^19.0.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "rimraf": "^6.0.1",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2"
+  }
+}

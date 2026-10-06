@@ -52,6 +52,10 @@ function main() {
 
     const lines = content.split("\n");
     lines.forEach((line, idx) => {
+      // Explicit, per-line opt-out for a human-verified non-secret (e.g. a fake fixture
+      // value in a test asserting redaction/validation behavior). Never use this to
+      // suppress a real credential — only a fictitious value a test deliberately contains.
+      if (/secret-scan-ignore-line/.test(line)) return;
       for (const { name, regex } of PATTERNS) {
         if (regex.test(line)) {
           violations.push({ file, line: idx + 1, name });

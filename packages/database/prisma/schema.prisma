@@ -1,0 +1,281 @@
+// Prisma schema for the product-neutral platform foundation.
+// Do not add product-specific tables here; extend in a product module instead.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AccountStatus {
+  pending_verification
+  active
+  suspended
+  deleted
+}
+
+enum RoleName {
+  user
+  support
+  moderator
+  administrator
+  super_administrator
+}
+
+model User {
+  id              String        @id @default(uuid())
+  email           String        @unique
+  emailVerifiedAt DateTime?
+  status          AccountStatus @default(pending_verification)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  profile           Profile?
+  authIdentities     AuthIdentity[]
+  sessions           Session[]
+  userRoles          UserRole[]
+  securityEvents     SecurityEvent[]
+  auditLogs          AuditLog[]
+  consents           Consent[]
+  cookiePreferences  CookiePreference[]
+  notificationPrefs  NotificationPreference[]
+  files              File[]
+  deletionRequests   AccountDeletionRequest[]
+  exportRequests     DataExportRequest[]
+  verificationTokens VerificationToken[]
+
+  @@map("users")
+}
+
+model Profile {
+  userId      String  @id
+  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  displayName String?
+  avatarUrl   String?
+  updatedAt   DateTime @updatedAt
+
+  @@map("profiles")
+}
+
+// Credential/identity record for a given authentication method (password, Google OAuth, etc).
+model AuthIdentity {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider   String // "password" | "google" | "microsoft" | "github"
+  providerId String // external subject id, or empty for password
+  passwordHash String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([provider, providerId])
+  @@index([userId])
+  @@map("auth_identities")
+}
+
+model Session {
+  id            String    @id @default(uuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String @unique
+  userAgent     String?
+  ipAddress     String?
+  createdAt     DateTime  @default(now())
+  lastActiveAt  DateTime  @default(now())
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  revokedReason String?
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  name        RoleName         @unique
+  permissions RolePermission[]
+  userRoles   UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id    String           @id @default(uuid())
+  name  String           @unique
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model SecurityEvent {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  type      String
+  metadata  Json     @default("{}")
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([type])
+  @@map("security_events")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  targetType String?
+  targetId   String?
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+model Consent {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // e.g. "terms", "privacy"
+  version   String
+  acceptedAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("consents")
+}
+
+model CookiePreference {
+  userId        String   @id
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  analytics     Boolean  @default(false)
+  marketing     Boolean  @default(false)
+  consentVersion String
+  updatedAt     DateTime @updatedAt
+
+  @@map("cookie_preferences")
+}
+
+model NotificationPreference {
+  userId            String   @id
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productUpdates    Boolean  @default(true)
+  securityAlerts    Boolean  @default(true)
+  updatedAt         DateTime @updatedAt
+
+  @@map("notification_preferences")
+}
+
+model File {
+  id         String   @id @default(uuid())
+  ownerId    String
+  owner      User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  bucket     String
+  objectKey  String   @unique
+  mimeType   String
+  sizeBytes  Int
+  createdAt  DateTime @default(now())
+
+  @@index([ownerId])
+  @@map("files")
+}
+
+model FeatureFlag {
+  key         String  @id
+  description String?
+  enabled     Boolean @default(false)
+  rules       Json    @default("{}")
+  updatedAt   DateTime @updatedAt
+
+  @@map("feature_flags")
+}
+
+model AccountDeletionRequest {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  requestedAt DateTime  @default(now())
+  processedAt DateTime?
+  status      String    @default("pending")
+
+  @@index([userId])
+  @@map("account_deletion_requests")
+}
+
+model DataExportRequest {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  requestedAt DateTime  @default(now())
+  completedAt DateTime?
+  downloadUrl String?
+  status      String    @default("pending")
+
+  @@index([userId])
+  @@map("data_export_requests")
+}
+
+model WebhookEvent {
+  id          String   @id @default(uuid())
+  source      String
+  eventType   String
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([source, eventType])
+  @@map("webhook_events")
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+// One-time tokens backing email verification, password reset, and OTP login.
+model VerificationToken {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose    String // "email_verification" | "password_reset" | "otp"
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, purpose])
+  @@map("verification_tokens")
+}
+
