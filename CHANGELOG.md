@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-07
+
+### Added
+
+- `apps/api/test/phase13-security-attacks.spec.ts` — 21 attack-style
+  tests closing the specific gaps a full audit of the 38-item security
+  checklist found: a blanket self-role-assignment sweep across every
+  schema at once, an algorithm-confusion JWT attack (HS256 signed with
+  the RS256 public key), a regression test for BUG-014's OAuth
+  link-mode forged-token fix, an explicit CORS wildcard-plus-credentials
+  check, and a regression test for BUG-013's password-reset-confirm
+  throttle fix.
+
+### Notes
+
+- Full audit of the 38-item security checklist (authentication/
+  authorization bypass, IDOR, privilege escalation, session fixation/
+  hijacking, CSRF, XSS, open redirects, token/credential/password/
+  sensitive-data leakage, user enumeration, brute-force/rate-limiting,
+  weak password handling, insecure reset/verification, OAuth account
+  takeover/callback validation, redirect URI vulnerabilities, CORS/
+  cookie misconfiguration, JWT validation/algorithm/issuer/audience/
+  expiration problems, trust-boundary violations, client-side-only
+  authorization, secrets exposed to frontend/logs/output) found that
+  most items already had a dedicated attack test from an earlier phase.
+  No new CRITICAL or HIGH finding was produced — see
+  `docs/TRACEABILITY.md`'s "SECURITY CHECKS (Phase 13)" table for the
+  full item-by-item cross-reference, and `docs/auth/FINDINGS.md` for the
+  two pre-existing, LOW-severity, deliberately-accepted risks carried
+  forward (a password-reset timing side-channel; log content, as
+  opposed to keys, isn't scanned for an accidentally-embedded secret)
+  plus a newly-documented design decision (sessions are not bound to
+  IP/User-Agent, mitigated by HttpOnly/Secure/refresh-reuse-detection
+  instead).
+
 ## [0.13.0] - 2026-10-07
 
 ### Added

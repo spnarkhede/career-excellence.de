@@ -1240,6 +1240,101 @@ message: "..."})`, using the exact pre-existing message text unchanged
   squeezed into this one's documentation/mapping-layer scope.
 - **How to test:** N/A — not implemented, so nothing to test yet.
 
+### Phase 13 security audit: no new CRITICAL or HIGH finding
+
+- **Label:** Confirmed working (the overall audit outcome)
+- **Severity:** N/A — this entry records the audit itself, not a single bug.
+- **Status:** Confirmed working
+- **Component/file:** Repo-wide — every control named in the 38-item
+  checklist (see `docs/TRACEABILITY.md`'s "SECURITY CHECKS (Phase 13)"
+  table for the full item-by-item cross-reference).
+- **Problem:** N/A.
+- **What this phase actually did:** Phase 13's task is "locate the
+  control built in earlier phases, write an attack-style test that
+  proves it holds, and fix any gap with the smallest safe change" — most
+  of the 38 items already had a real attack-style test from an earlier
+  phase (forged JWTs, IDOR via cross-user session/OAuth-account access,
+  CSRF double-submit, open redirects, enumeration-safety, lockout,
+  OAuth state/replay validation, RLS, log redaction, no-stack-trace-in-
+  production). This phase's own audit (before writing anything) confirmed
+  that coverage and identified the genuinely NEW attack surface worth a
+  dedicated test: a blanket self-role-assignment sweep across every
+  schema at once (checklist item 5, the explicit "every endpoint"
+  wording), the algorithm-confusion variant of a forged JWT (HS256 signed
+  with the RS256 public key — checklist item 28, distinct from the
+  already-covered alg:none and wrong-key cases), a regression test for
+  BUG-014's OAuth link-mode forged-token fix (previously had zero
+  automated coverage per that finding's own "Requires manual
+  verification" note), an explicit CORS wildcard-plus-credentials check,
+  and a regression test for BUG-013's password-reset-confirm throttle fix
+  (also previously untested). All five are new tests in
+  `apps/api/test/phase13-security-attacks.spec.ts` — 21/21 passing, every
+  one actually run (no database needed for any of them).
+- **Outcome:** Every attack attempted in this phase's new tests was
+  correctly rejected by the existing controls — no new CRITICAL or HIGH
+  finding was produced. Two previously-documented LOW-severity accepted
+  risks remain open (unchanged by this phase, carried forward
+  deliberately rather than silently dropped): the `requestPasswordReset`
+  timing side-channel (see the "Potential risk" entry earlier in this
+  file) and BUG-003's residual gap (an error's own `.message`/`.stack`
+  string content isn't content-scanned for an accidentally-embedded
+  secret, only object keys are redacted). Both are LOW severity by
+  AUTH_RULES.md rule 11's own scale, so "no CRITICAL or HIGH finding is
+  open" (this phase's DONE WHEN condition) holds.
+- **Related components:** See the TRACEABILITY.md table for the full
+  38-item cross-reference; items 6/7 (session fixation, session
+  hijacking) are documented below as deliberate, reasoned design
+  decisions rather than gaps.
+- **How to test:** `apps/api/test/phase13-security-attacks.spec.ts` (21
+  tests, actually run); the pre-existing tests referenced throughout
+  TRACEABILITY.md's Phase 13 table for every other item.
+
+### Potential risk, accepted by design: sessions are not bound to IP or User-Agent
+
+- **Label:** Potential risk (a deliberate, reasoned design decision — not
+  a bug, and not newly discovered this phase)
+- **Severity:** LOW — mitigated by several independent controls, not
+  left genuinely open.
+- **Status:** Confirmed working (as currently designed; documented here
+  per Phase 13's "session hijacking" checklist item so the reasoning is
+  on record rather than merely implicit)
+- **Component/file:** `apps/api/src/auth/session.guard.ts`,
+  `apps/api/src/auth/auth.service.ts` (`refresh()`, `createSession()`)
+- **Problem:** A session cookie, once obtained by any means, is honored
+  from any IP address or User-Agent — this codebase does not pin a
+  session to the client characteristics observed at login/creation time.
+  If a session cookie were ever exfiltrated (e.g. via physical device
+  access, a misconfigured intermediary, or a browser extension with
+  cookie-read access), the resulting session would work for an attacker
+  from anywhere.
+- **Root cause / why it happens:** Not an oversight — IP/User-Agent
+  binding is a deliberate tradeoff this codebase does not make, because
+  it actively breaks legitimate use (mobile clients roaming between
+  cell towers/Wi-Fi networks change IP mid-session constantly; browser
+  User-Agent strings change across minor version updates) for a security
+  property that overlaps heavily with controls already in place:
+  `HttpOnly` prevents JavaScript (and therefore XSS) from ever reading
+  the cookie value at all; `Secure` prevents interception over an
+  unencrypted network; `SameSite=Lax`/`Strict` limits cross-site
+  transmission; short access-token lifetimes plus refresh-token-reuse
+  detection (Phase 7) bound how long a stolen token remains useful and
+  actively detect the specific "same token presented twice from two
+  different places" pattern IP-binding would otherwise exist to catch.
+- **Impact:** A genuinely stolen, still-valid cookie remains usable
+  cross-device/cross-location until it naturally expires or reuse
+  detection fires on its next rotation — this is the accepted residual
+  risk.
+- **Recommended fix:** None recommended by default. If a future
+  compliance requirement (e.g. a specific customer's security
+  questionnaire) demands IP/device binding, it should be implemented as
+  an opt-in, configurable control (e.g. per-tenant), not a blanket
+  default, given the mobile-roaming tradeoff above.
+- **Regression risk:** N/A — no change made.
+- **How to test:** N/A by design — there is deliberately no control here
+  to test; the MITIGATING controls (HttpOnly, Secure, refresh-reuse
+  detection) are tested elsewhere (Phase 7's `phase7-session.integration.spec.ts`,
+  `packages/security/src/index.spec.ts`'s cookie-options tests).
+
 ### BUG-015: `ForbiddenError` fell through to the generic exception branch and returned HTTP 500 instead of 403
 
 - **Label:** Confirmed bug

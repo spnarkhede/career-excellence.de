@@ -1444,6 +1444,39 @@ message}` result; the page renders a retry UI on `"error"` rather than
    `index.ts` re-exports both) — `check:cycles` confirms 0 circular
    dependencies after the split.
 
+### Phase 13 security attack test suite (`apps/api/test/phase13-security-attacks.spec.ts`) — Implemented (Phase 13)
+
+1. Five attack-style test groups closing the specific gaps this phase's
+   own audit of Phases 1-12 identified (most of the 38-item checklist
+   already had a dedicated attack test from an earlier phase — see
+   `docs/TRACEABILITY.md`'s "SECURITY CHECKS (Phase 13)" table): a
+   blanket self-role-assignment sweep across every exported Zod schema at
+   once (checklist item 5's explicit "every endpoint" wording, not just
+   `updateProfileSchema`); the algorithm-confusion variant of a forged
+   JWT (HS256 signed with the RS256 public key, distinct from the
+   already-covered alg:none/wrong-key cases); a regression test for
+   BUG-014's OAuth link-mode forged-token fix (previously had zero
+   automated coverage); an explicit CORS wildcard-plus-credentials check;
+   a regression test for BUG-013's password-reset-confirm throttle fix
+   (also previously untested).
+2. Run via `pnpm --filter @saas/api test`.
+3. Calls `AuthService.verifyAccessToken` (real instance, no DB),
+   `OAuthController.start` (real instance with a real `AuthService`, no
+   DB), `buildCorsOptions`, and every exported schema from
+   `@saas/validation`.
+4. Receives no runtime input — constructs its own forged tokens/payloads.
+5. Returns pass/fail per attack attempted (21 assertions total).
+6. On failure: names the specific attack and what was expected vs. what
+   happened.
+7. Secure: not itself a security control — a test-infrastructure
+   component verifying OTHER security controls hold under adversarial
+   input, per Phase 13's explicit task ("write an attack-style test that
+   proves it holds").
+8. No inconsistent-state risk — every test is pure/stateless (no
+   database needed for any of the 21 assertions, so it's **Confirmed
+   working**, not "Requires manual verification," for everything it
+   covers).
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned
