@@ -104,8 +104,24 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const tokens = await this.authService.login(dto, requestContext(req));
+    // Session fixation prevention: resolve whatever session the caller's CURRENT
+    // cookie points at (if any/still valid) so AuthService.login can discard it once
+    // the new login succeeds. A missing/invalid/expired existing cookie is not an
+    // error here — it just means there is nothing to discard.
+    let existingSessionId: string | null = null;
+    const existingAccessToken = req.cookies?.[env.AUTH_SESSION_COOKIE_NAME];
+    if (existingAccessToken) {
+      try {
+        existingSessionId = this.authService.verifyAccessToken(existingAccessToken).sessionId;
+      } catch {
+        existingSessionId = null;
+      }
+    }
+
+    const tokens = await this.authService.login(dto, requestContext(req), existingSessionId);
     setSessionCookies(res, tokens);
+    // No tokens in the response body when using cookies (checklist) — only a status
+    // acknowledgement; the client re-derives auth state from GET /auth/me afterward.
     return { ok: true };
   }
 

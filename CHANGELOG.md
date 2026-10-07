@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-07
+
+### Added
+
+- `apps/api/src/common/redis-throttler-storage.ts`: Redis-backed `ThrottlerStorage`,
+  replacing `@nestjs/throttler`'s in-process-memory default globally.
+- Growing-delay account lockout (`computeLockoutDuration`): 5 failed attempts locks
+  the account, each additional failure doubles the lockout duration (capped at 24h).
+- Dummy-hash timing protection in `AuthService.login`: an unknown email is compared
+  against a fixed-cost hash computed once at startup, so response time doesn't
+  distinguish "no such account" from "wrong password."
+- Session-fixation prevention: `login()` accepts the caller's existing session (if
+  any, resolved by the controller from the current cookie) and discards it on a
+  successful new login.
+- `apps/api/src/common/all-exceptions.filter.ts`: maps Prisma connection failures to
+  503 with a safe message (never a raw Prisma error); sets a `Retry-After` header
+  when an exception's details carry `retryAfterSeconds`.
+- `ZodValidationPipe` now throws `422 Unprocessable Entity` with per-field messages
+  instead of a generic `400`, across every Zod-validated endpoint.
+- `packages/api-client`: per-request timeout (`AbortController`, default 10s,
+  `ApiClientTimeoutError`) and offline detection (`ApiClientOfflineError`), both
+  checked before/instead of a hanging or failing fetch.
+- Login page: double-submit guard (a ref alongside `isSubmitting`), redirect to the
+  dashboard if already authenticated (checked via a real `GET /auth/me`, never
+  assumed), and distinct timeout/offline/server-error messages.
+- Dashboard: a visible retry state (`<DashboardError>`) instead of a blank page or
+  crash on any `/auth/me` failure other than 401 (which still redirects to login).
+- 19 new tests: `packages/api-client/src/index.spec.ts` (8, actually run),
+  `apps/api/test/all-exceptions-filter.spec.ts` (5, actually run), and
+  `apps/api/test/phase5-login.integration.spec.ts` (14, DB-dependent).
+
+### Fixed
+
+- **BUG-008 (medium severity)**: `login()` checked `locked`/`disabled`/`deleted`
+  account status BEFORE verifying the password — the same enumeration pattern as
+  BUG-007, letting anyone learn a known email's exact account status using any
+  password at all. Fixed in the same rewrite that added dummy-hash timing
+  protection; every account-state check now runs only after the password matches.
+
+### Notes
+
+- Same environment limitation as Phases 3/4: no live Postgres database was
+  available. This phase adds a new category of limitation on top: items requiring
+  real browser automation (double-click guard, multi-tab, offline mode in an actual
+  browser, slow-network throttling) were not exercised either — see
+  `docs/auth/PROGRESS.md` Phase 5 detail for the full breakdown.
+
 ## [0.5.0] - 2026-10-07
 
 ### Added
@@ -202,7 +249,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and creates a git tag.
 - References to AUTH_RULES.md from CLAUDE.md and AGENTS.md.
 
-[Unreleased]: https://example.com/compare/v0.5.0...HEAD
+[Unreleased]: https://example.com/compare/v0.6.0...HEAD
+[0.6.0]: https://example.com/compare/v0.5.0...v0.6.0
 [0.5.0]: https://example.com/compare/v0.4.0...v0.5.0
 [0.4.0]: https://example.com/compare/v0.3.0...v0.4.0
 [0.3.0]: https://example.com/compare/v0.2.0...v0.3.0

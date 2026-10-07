@@ -72,8 +72,8 @@ describe("cascade delete and soft delete (real database)", () => {
 
     // Row itself (and the email, per the documented reuse decision — see
     // docs/auth/FINDINGS.md) still exists; the account simply can never sign in again.
-    await expect(authService.login({ email, password }, ctx)).rejects.toThrow(
-      /invalid email or password/i,
-    );
+    // Phase 5 distinguishes this from "wrong credentials" with a distinct 403 message
+    // (checked only after the password has already been confirmed correct).
+    await expect(authService.login({ email, password }, ctx)).rejects.toThrow(/disabled/i);
   });
 });

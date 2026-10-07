@@ -1,5 +1,11 @@
 import jwt from "jsonwebtoken";
-import { BadRequestException, Injectable, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ForbiddenException,
+  HttpException,
+  Injectable,
+  UnauthorizedException,
+} from "@nestjs/common";
 import { generateNumericOtp, issueOneTimeToken } from "@saas/auth";
 import { loadPrivateEnv } from "@saas/config";
 import { prisma, type Prisma } from "@saas/database";
@@ -56,10 +62,28 @@ const env = loadPrivateEnv();
 // Swap for a real provider adapter without touching call sites below.
 const emailProvider = new StubEmailProvider();
 
-// After this many consecutive failed password attempts, the account is locked for
-// LOCKOUT_DURATION_MS rather than allowing unlimited guesses.
-const MAX_FAILED_LOGIN_ATTEMPTS = 10;
-const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
+// Per-account lockout (checklist "Rate-limited account" / "Locked account"): after
+// this many consecutive failed password attempts within the window, the account is
+// locked with a GROWING delay — each additional failure beyond the threshold doubles
+// the lockout duration (capped), rather than a single fixed window, to slow a
+// persistent attacker faster than a one-off typo-prone legitimate user.
+const MAX_FAILED_LOGIN_ATTEMPTS = 5;
+const BASE_LOCKOUT_DURATION_MS = 15 * 60 * 1000;
+const MAX_LOCKOUT_DURATION_MS = 24 * 60 * 60 * 1000;
+
+function computeLockoutDuration(failedLoginCount: number): number {
+  const overage = Math.max(0, failedLoginCount - MAX_FAILED_LOGIN_ATTEMPTS);
+  return Math.min(MAX_LOCKOUT_DURATION_MS, BASE_LOCKOUT_DURATION_MS * 2 ** overage);
+}
+
+// A fixed-cost dummy hash, computed once at process startup (never per-request) and
+// verified against on every login for an email that doesn't exist, so the time taken
+// to reject an unknown email is statistically indistinguishable from a wrong password
+// on a known one — checklist: "the response times for known and unknown emails are
+// within a set tolerance." A literal hardcoded hash would tie this to one specific
+// ARGON2_PARAMS forever; computing it once at boot keeps it self-consistent with
+// whatever the current parameters are.
+const dummyHashPromise: Promise<string> = hashPassword(generateSecureToken(32));
 
 @Injectable()
 export class AuthService {
@@ -316,53 +340,71 @@ export class AuthService {
     return "valid";
   }
 
-  async login(input: LoginInput, ctx: RequestContext): Promise<IssuedTokens & { userId: string }> {
+  /**
+   * `existingSessionId` is the session the caller's current cookie resolves to, if
+   * any (resolved by the controller, which can read the cookie before this is
+   * called) — passed through so a successful login can discard it (session fixation
+   * prevention: a session that existed before this login must never remain valid
+   * alongside the new one).
+   */
+  async login(
+    input: LoginInput,
+    ctx: RequestContext,
+    existingSessionId?: string | null,
+  ): Promise<IssuedTokens & { userId: string }> {
     const user = await prisma.user.findUnique({ where: { email: input.email } });
 
-    // Neutral failure for "no such user" and "wrong password" alike — never reveal
-    // which one it was (user enumeration).
-    if (!user || !user.passwordHash || user.deletedAt) {
+    // Checklist "Credentials": look up by normalized email (emailSchema already
+    // trimmed/lowercased it before this ever runs). When no user exists, still run a
+    // password comparison — against a fixed-cost dummy hash computed once at process
+    // startup — so the time taken is statistically indistinguishable from comparing
+    // against a real, wrong password. Both outcomes throw the identical message.
+    const passwordHashToCompare = user?.passwordHash ?? (await dummyHashPromise);
+    const valid = await verifyPassword(passwordHashToCompare, input.password);
+
+    if (!user || !user.passwordHash || !valid) {
       await this.recordAuthEvent(user?.id ?? null, "login_failed", ctx);
+      if (user) {
+        await this.recordFailedAttempt(user);
+      }
       throw new UnauthorizedException("Invalid email or password.");
+    }
+
+    // Every account-state check below runs ONLY after the password has been
+    // confirmed correct (checklist: "Account states, checked only after the password
+    // matches") — checking any of these first would let anyone probe an email's
+    // existence/status using any password at all, an enumeration vector.
+
+    if (user.deletedAt || user.status === "disabled" || user.status === "deleted") {
+      await this.recordAuthEvent(user.id, "login_blocked_status", ctx);
+      throw new ForbiddenException({
+        code: "ACCOUNT_DISABLED",
+        message: "This account is disabled. Contact support for help.",
+      });
     }
 
     if (user.status === "locked" && user.lockedUntil && user.lockedUntil > new Date()) {
       await this.recordAuthEvent(user.id, "login_blocked_locked", ctx);
-      throw new UnauthorizedException("Invalid email or password.");
-    }
-
-    if (user.status === "disabled" || user.status === "deleted") {
-      await this.recordAuthEvent(user.id, "login_blocked_status", ctx);
-      throw new UnauthorizedException("Invalid email or password.");
-    }
-
-    const valid = await verifyPassword(user.passwordHash, input.password);
-    if (!valid) {
-      const failedLoginCount = user.failedLoginCount + 1;
-      const lockingOut = failedLoginCount >= MAX_FAILED_LOGIN_ATTEMPTS;
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          failedLoginCount,
-          ...(lockingOut
-            ? { status: "locked", lockedUntil: new Date(Date.now() + LOCKOUT_DURATION_MS) }
-            : {}),
+      throw new HttpException(
+        {
+          code: "ACCOUNT_LOCKED",
+          message: "This account is temporarily locked due to repeated failed attempts.",
+          details: { unlockAt: user.lockedUntil.toISOString() },
         },
-      });
-      await this.recordAuthEvent(user.id, lockingOut ? "account_locked" : "login_failed", ctx);
-      throw new UnauthorizedException("Invalid email or password.");
+        423, // HttpStatus has no LOCKED member; 423 is the standard WebDAV "Locked" code.
+      );
     }
 
-    // Checked only AFTER the password has been confirmed correct — revealing
-    // "unverified" before that would let anyone probe whether an email is registered
-    // and pending verification using any password at all (an enumeration vector).
-    // Once the password is right, telling the account's own owner they still need to
-    // verify leaks nothing they don't already know.
     if (user.status === "pending_verification") {
       await this.recordAuthEvent(user.id, "login_blocked_unverified", ctx);
-      throw new UnauthorizedException("Please verify your email address before signing in.");
+      throw new ForbiddenException({
+        code: "EMAIL_NOT_VERIFIED",
+        message: "Please verify your email address before signing in.",
+      });
     }
 
+    // Reset the failure counter on any successful login (checklist: "Reset on
+    // success").
     if (user.failedLoginCount > 0 || user.status === "locked") {
       await prisma.user.update({
         where: { id: user.id },
@@ -378,10 +420,37 @@ export class AuthService {
       await prisma.user.update({ where: { id: user.id }, data: { passwordHash: newHash } });
     }
 
+    // Session fixation prevention: discard whatever session the caller's current
+    // cookie pointed at (if any — e.g. an expired or borrowed cookie) before issuing
+    // a brand-new one for this login.
+    if (existingSessionId) {
+      await prisma.session.updateMany({
+        where: { id: existingSessionId, revokedAt: null },
+        data: { revokedAt: new Date(), revokedReason: "superseded_by_new_login" },
+      });
+    }
+
     const tokens = await this.createSession(user.id, ctx);
     await this.recordAuthEvent(user.id, "login_succeeded", ctx);
 
     return { ...tokens, userId: user.id };
+  }
+
+  private async recordFailedAttempt(user: { id: string; failedLoginCount: number }): Promise<void> {
+    const failedLoginCount = user.failedLoginCount + 1;
+    const lockingOut = failedLoginCount >= MAX_FAILED_LOGIN_ATTEMPTS;
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        failedLoginCount,
+        ...(lockingOut
+          ? {
+              status: "locked",
+              lockedUntil: new Date(Date.now() + computeLockoutDuration(failedLoginCount)),
+            }
+          : {}),
+      },
+    });
   }
 
   async refresh(

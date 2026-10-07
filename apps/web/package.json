@@ -18,6 +18,7 @@
     "@saas/contracts": "workspace:*",
     "@saas/design-tokens": "workspace:*",
     "@saas/security": "workspace:*",
+    "@saas/types": "workspace:*",
     "@saas/ui": "workspace:*",
     "@saas/validation": "workspace:*",
     "@tanstack/react-query": "^5.62.7",

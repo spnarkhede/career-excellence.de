@@ -457,6 +457,146 @@ true)` (transaction-scoped).
    5-character hex prefix is sent, matching the k-anonymity protocol exactly.
 8. No inconsistent-state risk.
 
+## Phase 5 components (login process)
+
+### `AuthService.login` — dummy-hash timing protection + correct status-check ordering (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Looks up by normalized email; verifies against a real hash if the user exists, or
+   a fixed-cost dummy hash (computed once at process startup) if not — so an unknown
+   email and a wrong password on a known one take statistically similar time. Every
+   account-state check (`disabled`/`deleted`/`locked`/`pending_verification`) runs
+   only after the password is confirmed correct.
+2. Called by `AuthController.login`.
+3. Calls `verifyPassword`, `recordFailedAttempt`, `recordAuthEvent`, `createSession`.
+4. Receives the login DTO, request context, and (new) an optional
+   `existingSessionId` to discard on success.
+5. Returns `IssuedTokens & { userId }`, or throws a typed exception (401/403/423).
+6. On failure: never reveals which of "no such email" / "wrong password" it was;
+   account-status responses (403/423) are only reachable with the correct password.
+7. Secure: this is the direct fix for BUG-007 and BUG-008 (see `FINDINGS.md`) — the
+   entire reason this method was rewritten this phase.
+8. No inconsistent-state risk — failure-count/lockout updates and session creation
+   are each their own atomic DB operation.
+
+### `AuthService.recordFailedAttempt` — growing-delay lockout (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Increments `failedLoginCount`; once it reaches the 5-attempt threshold, locks the
+   account for a duration that DOUBLES for each failure beyond the threshold (capped
+   at 24h) — a persistent attacker is slowed exponentially faster than a one-off
+   typo-prone legitimate user.
+2. Called by `login` on a wrong-password attempt against a real account.
+3. Calls `prisma.user.update`.
+4. Receives the user's id and current `failedLoginCount`.
+5. Returns `void`.
+6. On failure: n/a (a DB write failure here propagates and the login attempt itself
+   fails closed with a 5xx, never silently skipping the lockout).
+7. Secure: this is the literal "growing delay" checklist requirement.
+8. No inconsistent-state risk.
+
+### `RedisThrottlerStorage` (`apps/api/src/common/redis-throttler-storage.ts`) — Implemented
+
+1. Implements `@nestjs/throttler`'s `ThrottlerStorage` interface backed by Redis
+   (`INCR`/`PEXPIRE`/`PTTL`) instead of the library's own in-process-memory default —
+   replaces it globally for every `@Throttle`-guarded route, not only login.
+2. Called by `ThrottlerGuard` (wired via `ThrottlerModule.forRootAsync` in
+   `app.module.ts`).
+3. Calls the shared `ioredis` client (`RedisModule`).
+4. Receives a rate-limit key, TTL, limit, block duration, and throttler name.
+5. Returns a `ThrottlerStorageRecord` (hit count, block state, retry timing).
+6. On failure: a Redis outage would make every throttled route fail (no silent
+   fallback to unlimited) — intentional: the Phase 5 spec requires rate limiting to
+   live in a shared store, "never process memory," so there is no in-process fallback
+   to degrade to.
+7. Secure: this is the literal "shared store... never process memory" checklist
+   requirement, previously violated by the library's own default.
+8. No inconsistent-state risk — Redis is the single source of truth for every
+   instance of the API.
+
+### `AllExceptionsFilter` — Prisma connection-error mapping + Retry-After (`apps/api/src/common/all-exceptions.filter.ts`) — Implemented
+
+1. Maps a Prisma connection-level error (`PrismaClientInitializationError`, or a
+   known-request error with a connection-failure code) to 503 with a safe, generic
+   message — never the raw Prisma error (which can include hostnames/connection
+   strings). Also now sets a `Retry-After` header whenever an exception's `details`
+   carry a `retryAfterSeconds` value.
+2. Called by Nest's global exception-handling pipeline for every unhandled error.
+3. Calls `logger.error` (redacting).
+4. Receives any thrown exception.
+5. Returns a normalized `{ requestId, code, message, details }` body.
+6. On failure: n/a — this _is_ the failure handler.
+7. Secure: this is the literal "map auth provider errors, database errors... to safe
+   codes (503 or 502) with a retry path" checklist requirement.
+8. No inconsistent-state risk.
+
+### `ZodValidationPipe` — 422 instead of 400 (`apps/api/src/common/zod-validation.pipe.ts`) — Implemented
+
+1. Validation failures now return `422 Unprocessable Entity` (the semantically
+   correct code for "syntactically valid, semantically invalid") with per-field
+   messages, instead of a generic `400`. Applies to every Zod-validated endpoint in
+   the app, not only login.
+2. Called by every controller method annotated `@UsePipes(new ZodValidationPipe(...))`.
+3. Calls the given Zod schema's `safeParse`.
+4. Receives the raw request body.
+5. Returns the parsed, typed body, or throws `UnprocessableEntityException`.
+6. On failure: field-level errors (`details.fieldErrors`) let the client show exactly
+   which field was wrong, never a raw Zod error object.
+7. Secure: this is the literal "reject... with 422 and field messages" checklist item.
+8. No inconsistent-state risk.
+
+### `createApiClient` — timeout, offline detection (`packages/api-client/src/index.ts`) — Implemented
+
+1. Adds a per-request timeout (`AbortController`, default 10s) and a fail-fast,
+   distinguishable error when `navigator.onLine` is `false`, both ahead of touching
+   the network.
+2. Called by every page using `apiClient`.
+3. Calls `fetch` with an abort signal.
+4. Receives a path, method, body, and an optional `timeoutMs`.
+5. Returns the parsed response, or throws `ApiClientTimeoutError`/
+   `ApiClientOfflineError`/`ApiClientError` (each distinct and narrowable by the
+   caller).
+6. On failure: a genuine network failure (e.g. DNS/connection refused) propagates
+   as-is, distinct from a timeout — the caller can tell the two apart.
+7. Secure: no secret is ever logged by these new error paths.
+8. No inconsistent-state risk.
+
+### `LoginForm` — double-submit guard, existing-session redirect, server-derived auth state (`apps/web/src/app/(auth)/login/page.tsx`) — Implemented
+
+1. Checks `GET /auth/me` on mount and redirects to the dashboard if already
+   authenticated (checklist "Existing session"); guards the submit handler with a
+   ref (in addition to react-hook-form's own `isSubmitting`) against a double-click
+   race; never sets local "logged in" state from the login response itself — every
+   page that needs auth state re-derives it from the server.
+2. Rendered by `apps/web/src/app/(auth)/login/page.tsx`.
+3. Calls `GET /auth/me`, `POST /auth/login`, `resolveRedirectTarget` (via
+   `isAllowedRedirect`).
+4. Receives the `next` query param.
+5. Returns rendered UI; on success, navigates to the resolved redirect target.
+6. On failure: distinguishes timeout/offline/server error in the shown message.
+7. Secure: redirect target is always allowlist-checked; this is the literal
+   "Redirect after login through the safe return URL helper" + "Signed in users
+   visiting login go to the dashboard" checklist items.
+8. No inconsistent-state risk — purely client-side rendering logic.
+
+### `DashboardError` / hardened dashboard fetch (`apps/web/src/app/dashboard/{page,dashboard-error}.tsx`) — Implemented
+
+1. The dashboard's server-side `/auth/me` fetch is now wrapped so a 401 still
+   redirects to `/login`, but every OTHER failure (network error, 5xx, malformed
+   body) renders a visible retry state instead of crashing or showing a blank page.
+2. Rendered for every request to `/dashboard`.
+3. Calls `GET /auth/me` (server-side, forwarding the session cookie).
+4. Receives the request's cookies.
+5. Returns the dashboard, a redirect, or `<DashboardError>`.
+6. On failure: never a blank page or an uncaught exception — this is the literal
+   "Login succeeding but dashboard/profile/permissions failing" checklist items.
+7. Secure: no session data is ever logged; the error message is generic.
+8. **Implementation note**: `redirect()` throws a Next.js-internal control-flow
+   error that must not be swallowed — the fetch is isolated in its own try/catch
+   that only ever produces a plain `Response | null`, and every status-based branch
+   (the redirect included) happens outside that block. Getting this wrong would have
+   silently broken the 401 redirect (the exact "Redirect loops" / blank-page failure
+   mode this component exists to prevent) — a bug worth documenting even though it
+   was caught before being committed.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

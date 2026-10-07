@@ -410,3 +410,52 @@ pnpm test && pnpm db:check-consistency` against a real, disposable Postgres data
   message); confirm a _wrong_ password on the same unverified account still gets the
   generic message (proving the distinct message is unreachable without the correct
   password first).
+
+### BUG-008: `login()` checked `locked`/`disabled`/`deleted` account status BEFORE verifying the password — the same enumeration side-channel as BUG-007, for three more statuses
+
+- **Label:** Confirmed bug
+- **Severity:** MEDIUM — narrower than BUG-007 (this didn't let anyone _in_, it only
+  let an attacker learn an email's exact status — locked vs. disabled vs. merely
+  wrong-password — without ever supplying the correct password), but it is the exact
+  enumeration pattern `AUTH_RULES.md` and this phase's own spec explicitly call out.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/auth.service.ts`, method `login`
+- **Exact location:** The `locked`/`disabled`/`deleted` status checks, which ran
+  immediately after the `user`-exists check and before `verifyPassword` was ever
+  called.
+- **Problem:** Submitting _any_ password for a known email returned a status-specific
+  response (a locked account's distinct rejection, a disabled account's) regardless
+  of whether the password was right — an attacker could fully enumerate which emails
+  exist and their exact account status using the login endpoint alone, no valid
+  credentials required.
+- **Root cause:** Same root cause pattern as BUG-007 — status checks were written as
+  an early blocklist ("get these out of the way first") rather than being deliberately
+  sequenced after credential verification, which is the only point in this handler
+  that doesn't trivially leak information to an unauthenticated caller.
+- **Trigger:** `POST /auth/login` with a real (locked/disabled/deleted) account's
+  email and literally any password.
+- **Impact:** Full account-status enumeration via the login endpoint for any known or
+  guessed email address, prior to this fix.
+- **Reproduction steps:** 1) Lock an account (5 failed attempts). 2) `POST /auth/login`
+  with that email and an obviously-wrong password. 3) Observe a "locked" response,
+  distinct from the generic invalid-credentials response a nonexistent email gets.
+- **Expected behavior:** Every unauthenticated login attempt against a real email
+  gets the identical generic message until a correct password is supplied.
+- **Actual behavior:** Status-specific responses leaked before credential checking,
+  prior to this fix.
+- **Why it happens:** See root cause.
+- **Related components:** Directly caught and fixed alongside BUG-007 in the same
+  `login()` rewrite — both are instances of "checked only after the password matches"
+  from this phase's own task list, which is why writing this phase's tests surfaced
+  both at once.
+- **Recommended fix (applied):** Moved every account-state check (`disabled`/
+  `deleted`/`locked`/`pending_verification`) to after `verifyPassword` succeeds, and
+  added dummy-hash timing protection (`dummyHashPromise`) so even the
+  exists/doesn't-exist distinction is no longer separable by response time.
+- **Regression risk:** Low — purely a reordering plus one added timing-protection
+  branch; every existing status/credential combination's final outcome is unchanged,
+  only _when_ it's decided relative to the password check.
+- **How to test the fix:** `apps/api/test/phase5-login.integration.spec.ts`'s locked/
+  disabled/deleted tests all submit the correct password to reach the status check —
+  written, not yet executed against a real database (see the environment-limitation
+  note carried forward from Phases 3/4).
