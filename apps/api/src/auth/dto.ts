@@ -1,12 +1,14 @@
 import { createZodDto } from "./zod-dto.js";
 import {
   loginSchema,
+  requestMagicLinkSchema,
   requestOtpSchema,
   requestPasswordResetSchema,
   resendVerificationSchema,
   resetPasswordSchema,
   signUpSchema,
   verifyEmailSchema,
+  verifyMagicLinkSchema,
   verifyOtpSchema,
 } from "@saas/validation";
 
@@ -18,3 +20,5 @@ export class VerifyEmailDto extends createZodDto(verifyEmailSchema) {}
 export class ResendVerificationDto extends createZodDto(resendVerificationSchema) {}
 export class RequestOtpDto extends createZodDto(requestOtpSchema) {}
 export class VerifyOtpDto extends createZodDto(verifyOtpSchema) {}
+export class RequestMagicLinkDto extends createZodDto(requestMagicLinkSchema) {}
+export class VerifyMagicLinkDto extends createZodDto(verifyMagicLinkSchema) {}

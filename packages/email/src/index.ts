@@ -28,6 +28,10 @@ export function otpEmailTemplate(code: string): SendEmailInput["html"] {
   return `<p>Your one-time verification code is:</p><p style="font-size:24px;font-weight:bold;">${code}</p><p>This code expires shortly.</p>`;
 }
 
+export function magicLinkEmailTemplate(signInUrl: string): SendEmailInput["html"] {
+  return `<p>Click the link below to sign in.</p><p><a href="${signInUrl}">Sign in</a></p><p>This link expires soon and can only be used once. If you didn't request this, you can ignore this email.</p>`;
+}
+
 /** Sent when someone tries to sign up with an email that already has an account — no
  * account is created; this notifies the real owner without confirming anything to the
  * person who submitted the form (who never sees a different response either way). */

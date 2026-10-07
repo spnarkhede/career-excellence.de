@@ -12,7 +12,7 @@ verification, Unable to verify. "Not started" is used only before a phase has be
 | 3     | Database tables and data connections              | Requires manual verification | 2026-10-07 | 0.4.0   | `pnpm lint` 22/22; `pnpm typecheck` 22/22; `pnpm test` all pass (12 real + 10 DB-dependent skipped — no live Postgres in this environment, see Notes); `pnpm check:cycles` 0 cycles; `pnpm build` succeeds                                                                                                                                                     | Full Phase 3 schema (users/profiles/oauth_accounts/sessions/one_time_tokens/auth_events + RLS), 2 migrations with down.sql, AuthService rewritten (transactional signup, password on users.passwordHash, lockout, soft delete, refresh-reuse detection), consistency-check script, seed script with generated test users. **No live database was available in this environment** — every DB-dependent test (1,2,3,4,6,7,8) is written and will run for real in CI, but was not executed against a real Postgres instance in this session; see FINDINGS.md. One critical bug (BUG-006: a draft migration would have silently orphaned every FK on a populated DB) was caught by manual review and fixed before being committed.                                                                                   |
 | 4     | Signup and verification                           | Requires manual verification | 2026-10-07 | 0.5.0   | `pnpm lint` 22/22; `pnpm typecheck` 22/22; `pnpm test` all pass (`packages/validation` 8/8 and `packages/security` 25/25 actually run — no DB needed; 13 new Phase 4 DB-dependent tests + 2 GET-verification tests skip cleanly, no live Postgres); `pnpm build` succeeds                                                                                      | NIST 800-63B password policy (no composition rules, min 8, max 128); argon2id with explicit OWASP params + rehash-on-login; breached-password check (HIBP k-anonymity, behind `FEATURE_BREACHED_PASSWORD_CHECK`, default off); timing/response-neutral duplicate signup (notice email, creates nothing); resend invalidates older tokens; 5 distinct verification states (valid/expired/already_used/invalid/already_verified); Confirm-button verify-email page (no auto-POST), `referrer: no-referrer`, token stripped from URL; found and fixed a real pre-existing gap — login() never checked `pending_verification` status (checklist item 6). Every DB-dependent test is written but **not executed against a real database in this session** (same environment limitation as Phase 3) — see FINDINGS.md. |
 | 5     | Login process                                     | Requires manual verification | 2026-10-07 | 0.6.0   | `pnpm lint` 22/22; `pnpm typecheck` 22/22; `pnpm test`: 2 new test suites needed no database and were actually run (`packages/api-client` 8/8, `apps/api` `all-exceptions-filter.spec.ts` 5/5) — 39 of this phase's DB/browser-dependent tests skip or are documented as manual; `pnpm build` succeeds                                                         | Rewrote `login()`: dummy-hash timing protection, ALL account-status checks moved to after password verification (found + fixed BUG-007 and BUG-008 doing this), growing-delay lockout (5 failures, doubling, capped 24h), session-fixation prevention (discards the caller's existing session on success). Replaced the in-process-memory throttler with a Redis-backed one (`RedisThrottlerStorage`), globally. Validation errors now 422 with field messages (was 400). Mapped Prisma connection failures to 503. Added client-side timeout/offline detection (`@saas/api-client`), a double-submit guard + existing-session redirect on the login page, and a hardened dashboard with a visible retry state on failure instead of a blank page/crash.                                                         |
-| 6     | OTP authentication                                | Not started                  |            |         |                                                                                                                                                                                                                                                                                                                                                                |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 6     | OTP authentication                                | Requires manual verification | 2026-10-07 | 0.7.0   | `pnpm lint` 22/22; `pnpm typecheck` 22/22; `pnpm test`: all previously-passing non-DB suites still pass (17/17), 12 new `phase6-otp.integration.spec.ts` tests written and skip cleanly (no live Postgres — same environment limitation as Phases 3-5); `pnpm build` succeeds                                                                                  | Rewrote `requestOtp`/`verifyOtp` for atomic single-use consume (found + fixed BUG-009, a real concurrent-use race in the pre-existing code), resend-invalidation, per-destination cooldown, session-fixation handling. Added `requestMagicLink`/`verifyMagicLink` to pragmatically resolve open question D4 (implement both OTP and magic link, per ARCHITECTURE.md). Added the magic-link confirm page (Confirm button + POST, link scanners can't consume it) and the OTP request/verify UI (one input, `autocomplete="one-time-code"`, numeric input mode, paste support, 30s countdown).                                                                                                                                                                                                                     |
 | 7     | Session lifecycle                                 | Not started                  |            |         |                                                                                                                                                                                                                                                                                                                                                                |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 8     | Password reset                                    | Not started                  |            |         |                                                                                                                                                                                                                                                                                                                                                                |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 9     | OAuth providers and processes                     | Not started                  |            |         |                                                                                                                                                                                                                                                                                                                                                                |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -372,3 +372,67 @@ states, checked only after the password matches"):
   the deliberately safer failure mode per the "never process memory" requirement, but
   it does mean a Redis outage becomes a login-availability incident, not just a
   rate-limiting gap. Worth flagging for the production-readiness phase.
+
+## Phase 6 detail
+
+### Done-when verification
+
+"All tests pass" — **Requires manual verification, not Confirmed working**: same
+environment limitation as every prior phase (no live Postgres in this session). All
+12 new `phase6-otp.integration.spec.ts` tests (covering every item in the Phase 6
+TESTS list, plus magic-link equivalents) are written as real, non-mocked integration
+tests and skip cleanly via `isDatabaseReachable()`. No test file in this phase was
+runnable without a database — unlike Phase 5, there was no network/timeout/offline
+subset that could be exercised without one. The full `apps/api` suite was re-run
+after every change and confirmed zero regressions (17 previously-passing non-DB tests
+still pass).
+
+### Tests run (checklist item -> status)
+
+| #   | Item                            | Status                                                                                                                   |
+| --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 1   | OTP authentication (happy path) | Requires manual verification (written, DB-dependent)                                                                     |
+| 2   | OTP generation and hashing      | Requires manual verification — assertions on `tokenHash` shape/non-equality are written but need a database to run       |
+| 3   | OTP expiration                  | Requires manual verification (written, DB-dependent)                                                                     |
+| 4   | OTP attempt limits              | Requires manual verification (written, DB-dependent — 5-attempt lockout test)                                            |
+| 5   | OTP resend                      | Requires manual verification (written, DB-dependent — both the invalidate-previous and the cooldown-blocks-resend tests) |
+| 6   | OTP enumeration protection      | Requires manual verification (written, DB-dependent — identical-response tests for request and verify)                   |
+| 7   | OTP replay prevention           | Requires manual verification (written, DB-dependent — replay test and the concurrent-use race test, both target BUG-009) |
+| 8   | Magic link (D4 resolution)      | Requires manual verification (written, DB-dependent — replay, concurrent-use, and unrecognized-token tests)              |
+
+### Findings
+
+One real, pre-existing bug found and fixed while writing this phase's own
+concurrency test:
+
+- **BUG-009**: `verifyOtp()`'s code-consumption step used a non-atomic
+  `findFirst` + `update` pair, letting two concurrent correct submissions of the same
+  code both succeed (each issuing its own session) — exactly the race this phase's
+  own "concurrent use of one code, exactly one succeeds" test requirement exists to
+  catch. Fixed by replacing it with a single atomic `updateMany` guarded by
+  `usedAt: null`, checking `count === 0` to detect and reject the losing racer. The
+  same (already-correct) pattern was reused for the new `verifyMagicLink`. Full
+  record in `docs/auth/FINDINGS.md`.
+
+### Open questions and risks
+
+- **Missing information / carried-forward environment limitation**: no live
+  Postgres, same as every prior phase.
+- **No browser testing performed**: the magic-link confirm page and the OTP
+  request/verify UI (countdown, paste support, numeric input mode) were implemented
+  but never exercised in an actual browser in this session — both are Requires
+  manual verification, not Confirmed working.
+- **D4 pragmatically resolved, not by human confirmation**: this phase implemented
+  both OTP and magic link rather than waiting for the human to pick one, since the
+  Phase 6 task list itself described both as in scope. If the human intended a single
+  mechanism, the unwanted one should be disabled (not deleted — the `purpose` column
+  already separates them cleanly) rather than left live by default.
+- **D6 (TOTP MFA) remains unresolved and unimplemented.** Task 7's "OTP as a second
+  factor, if in scope, runs after password verification and before session creation"
+  was read as conditional on a scope that was never confirmed, so no second-factor
+  wiring was added — `verifyOtp` and `verifyMagicLink` each independently create a
+  fresh session, the same as `login()`, not as a second step after it.
+- **Carried-forward**: the remaining open architecture questions from Phase 1 are
+  still unanswered (managed-provider choice, OAuth provider scope, multi-tenancy,
+  real domain names, phase-plan renumbering, harden-vs-discard decision, RLS wiring
+  into Prisma's actual connection).

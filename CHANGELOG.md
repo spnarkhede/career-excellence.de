@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-07
+
+### Added
+
+- OTP authentication rewritten (`AuthService.requestOtp`/`verifyOtp`): CSPRNG
+  6-digit code, hash-only storage, 5-minute expiry, 5-attempt lockout, atomic
+  single-use consume, resend invalidates the previous code, 30-second
+  per-destination resend cooldown, identical responses for known/unknown
+  destinations.
+- Magic link authentication (`AuthService.requestMagicLink`/`verifyMagicLink`),
+  added to pragmatically resolve open question D4 — implements both mechanisms
+  rather than waiting on a human pick, since the Phase 6 task list itself
+  described both as in scope: CSPRNG 32-byte token, hash-only storage, 10-minute
+  expiry, same atomic single-use consume and resend/cooldown guarantees as OTP.
+  Two new endpoints: `POST /auth/magic-link/request`, `POST /auth/magic-link/verify`.
+- `AuthController.resolveExistingSessionId`: deduplicated the session-fixation
+  check (first written for `login()` in Phase 5) into one shared helper, now also
+  used by `/otp/verify` and `/magic-link/verify`.
+- Magic-link confirm page (`apps/web/src/app/(auth)/magic-link/`): Confirm-button
+  - POST pattern (mirrors Phase 4's verify-email page) so an automated link
+    scanner following the raw GET link cannot consume the token; `no-referrer` page
+    metadata; token stripped from the URL on load.
+- OTP request/verify UI (`apps/web/src/app/(auth)/otp/`): single code input with
+  `autocomplete="one-time-code"`, `inputMode="numeric"`, native paste support, a
+  30-second resend countdown, and distinct error states per attempt.
+- 12 new tests in `apps/api/test/phase6-otp.integration.spec.ts`, covering every
+  item in the Phase 6 TESTS list (expired code, wrong-code-until-lockout,
+  replayed code, resend invalidation, concurrent use, enumeration-safe responses,
+  no raw code in the database) plus magic-link equivalents.
+
+### Fixed
+
+- **BUG-009 (high severity)**: `verifyOtp()`'s code-consumption step used a
+  non-atomic `findFirst` + `update` pair, letting two concurrent correct
+  submissions of the same code both succeed, each issuing its own session.
+  Fixed by replacing it with a single atomic `updateMany` guarded by
+  `usedAt: null`, rejecting whichever concurrent caller loses the race. The same
+  (already-correct) pattern was used for the new `verifyMagicLink` from the
+  start.
+
+### Notes
+
+- Same environment limitation as every prior phase: no live Postgres database
+  was available in this session, so every new DB-dependent test is written as a
+  real (non-mocked) integration test that skips cleanly rather than being
+  claimed as "Confirmed working." No browser automation was run against the new
+  frontend pages either — see `docs/auth/PROGRESS.md` Phase 6 detail.
+- D4 (OTP vs. magic link vs. both) is resolved pragmatically, not by human
+  confirmation — see `docs/auth/ARCHITECTURE.md`. D6 (TOTP MFA) remains
+  unresolved and unimplemented; OTP/magic-link verification each independently
+  create a new session, not as a second factor after password login.
+
 ## [0.6.0] - 2026-10-07
 
 ### Added
@@ -249,7 +301,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and creates a git tag.
 - References to AUTH_RULES.md from CLAUDE.md and AGENTS.md.
 
-[Unreleased]: https://example.com/compare/v0.6.0...HEAD
+[Unreleased]: https://example.com/compare/v0.7.0...HEAD
+[0.7.0]: https://example.com/compare/v0.6.0...v0.7.0
 [0.6.0]: https://example.com/compare/v0.5.0...v0.6.0
 [0.5.0]: https://example.com/compare/v0.4.0...v0.5.0
 [0.4.0]: https://example.com/compare/v0.3.0...v0.4.0

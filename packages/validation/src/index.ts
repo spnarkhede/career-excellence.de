@@ -75,6 +75,14 @@ export const verifyOtpSchema = z.object({
   code: z.string().length(6).regex(/^\d+$/, "OTP must be numeric"),
 });
 
+export const requestMagicLinkSchema = z.object({
+  email: emailSchema,
+});
+
+export const verifyMagicLinkSchema = z.object({
+  token: z.string().min(1),
+});
+
 export const updateProfileSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
 });
@@ -93,5 +101,7 @@ export type VerifyEmailInput = z.infer<typeof verifyEmailSchema>;
 export type ResendVerificationInput = z.infer<typeof resendVerificationSchema>;
 export type RequestOtpInput = z.infer<typeof requestOtpSchema>;
 export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>;
+export type RequestMagicLinkInput = z.infer<typeof requestMagicLinkSchema>;
+export type VerifyMagicLinkInput = z.infer<typeof verifyMagicLinkSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 export type CookiePreferencesInput = z.infer<typeof cookiePreferencesSchema>;

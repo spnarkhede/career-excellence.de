@@ -11,6 +11,7 @@ import { loadPrivateEnv } from "@saas/config";
 import { prisma, type Prisma } from "@saas/database";
 import {
   duplicateSignupNoticeTemplate,
+  magicLinkEmailTemplate,
   otpEmailTemplate,
   passwordResetEmailTemplate,
   StubEmailProvider,
@@ -28,11 +29,13 @@ import {
 import { generateSecureToken, isExpired } from "@saas/utils";
 import type {
   LoginInput,
+  RequestMagicLinkInput,
   RequestOtpInput,
   RequestPasswordResetInput,
   ResetPasswordInput,
   SignUpInput,
   VerifyEmailInput,
+  VerifyMagicLinkInput,
   VerifyOtpInput,
 } from "@saas/validation";
 
@@ -84,6 +87,15 @@ function computeLockoutDuration(failedLoginCount: number): number {
 // ARGON2_PARAMS forever; computing it once at boot keeps it self-consistent with
 // whatever the current parameters are.
 const dummyHashPromise: Promise<string> = hashPassword(generateSecureToken(32));
+
+// Phase 6 (OTP authentication): expiry within the 5-10 minute range the spec
+// requires; magic links get the generous end of that range since clicking an email
+// link is slower than typing a 6-digit code. Attempt limit matches the login
+// lockout's own default (5) for consistency. Cooldown is shown in the UI countdown.
+const OTP_TTL_MS = 5 * 60 * 1000;
+const MAGIC_LINK_TTL_MS = 10 * 60 * 1000;
+const MAX_OTP_ATTEMPTS = 5;
+const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
 
 @Injectable()
 export class AuthService {
@@ -556,34 +568,60 @@ export class AuthService {
 
   async requestOtp(input: RequestOtpInput, ctx: RequestContext): Promise<void> {
     const user = await prisma.user.findUnique({ where: { email: input.email } });
-    if (!user || user.deletedAt) return; // neutral response
+    // Same response for known and unknown destinations — the caller cannot tell
+    // these two branches apart from the outside.
+    if (!user || user.deletedAt) return;
+
+    // Per-destination cooldown + "resend invalidates the previous code": refuse to
+    // send a new code within the cooldown window, but respond identically either
+    // way; otherwise, invalidate any still-unused code before issuing a new one, so
+    // only the most recently sent code is ever valid.
+    const lastToken = await prisma.oneTimeToken.findFirst({
+      where: { userId: user.id, purpose: "otp" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (lastToken && Date.now() - lastToken.createdAt.getTime() < OTP_RESEND_COOLDOWN_MS) {
+      return;
+    }
+    await prisma.oneTimeToken.updateMany({
+      where: { userId: user.id, purpose: "otp", usedAt: null },
+      data: { usedAt: new Date() },
+    });
 
     const code = generateNumericOtp(6);
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + OTP_TTL_MS);
     await prisma.oneTimeToken.create({
       data: { userId: user.id, purpose: "otp", tokenHash: hashToken(code), expiresAt },
     });
-    await emailProvider.send({
-      to: user.email,
-      subject: "Your verification code",
-      html: otpEmailTemplate(code),
-    });
-    await this.recordAuthEvent(user.id, "otp_requested", ctx);
+    await this.sendEmail(
+      user.id,
+      user.email,
+      "Your verification code",
+      otpEmailTemplate(code),
+      ctx,
+      "otp_sent",
+      "otp_send_failed",
+    );
   }
 
   async verifyOtp(
     input: VerifyOtpInput,
     ctx: RequestContext,
+    existingSessionId?: string | null,
   ): Promise<IssuedTokens & { userId: string }> {
     const user = await prisma.user.findUnique({ where: { email: input.email } });
-    if (!user || user.deletedAt) throw new UnauthorizedException("Invalid or expired code.");
+    // Identical message for "no such user," "no live code," "expired," "too many
+    // attempts," and "wrong code" — none of these are distinguishable from outside.
+    if (!user || user.deletedAt) {
+      throw new UnauthorizedException("Invalid or expired code.");
+    }
 
     const record = await prisma.oneTimeToken.findFirst({
       where: { userId: user.id, purpose: "otp", usedAt: null },
       orderBy: { createdAt: "desc" },
     });
 
-    if (!record || isExpired(record.expiresAt) || record.attempts >= 5) {
+    if (!record || isExpired(record.expiresAt) || record.attempts >= MAX_OTP_ATTEMPTS) {
       throw new UnauthorizedException("Invalid or expired code.");
     }
 
@@ -595,14 +633,100 @@ export class AuthService {
       throw new UnauthorizedException("Invalid or expired code.");
     }
 
-    await prisma.oneTimeToken.update({
-      where: { id: record.id },
+    // Atomic consume: the WHERE clause re-checks `usedAt: null` at the moment of the
+    // UPDATE itself, not just at the earlier SELECT above. If two requests race with
+    // the same correct code, only the first UPDATE's row matches this guard — the
+    // second gets `count: 0` and is rejected, never issuing a second session for the
+    // same code (checklist/test: "concurrent use of one code, exactly one succeeds").
+    const consumed = await prisma.oneTimeToken.updateMany({
+      where: { id: record.id, usedAt: null },
       data: { usedAt: new Date() },
     });
+    if (consumed.count === 0) {
+      throw new UnauthorizedException("Invalid or expired code.");
+    }
+
+    if (existingSessionId) {
+      await prisma.session.updateMany({
+        where: { id: existingSessionId, revokedAt: null },
+        data: { revokedAt: new Date(), revokedReason: "superseded_by_new_login" },
+      });
+    }
 
     const tokens = await this.createSession(user.id, ctx);
     await this.recordAuthEvent(user.id, "otp_login_succeeded", ctx);
     return { ...tokens, userId: user.id };
+  }
+
+  async requestMagicLink(input: RequestMagicLinkInput, ctx: RequestContext): Promise<void> {
+    const user = await prisma.user.findUnique({ where: { email: input.email } });
+    if (!user || user.deletedAt) return; // same response for known and unknown
+
+    const lastToken = await prisma.oneTimeToken.findFirst({
+      where: { userId: user.id, purpose: "magic_link" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (lastToken && Date.now() - lastToken.createdAt.getTime() < OTP_RESEND_COOLDOWN_MS) {
+      return;
+    }
+    await prisma.oneTimeToken.updateMany({
+      where: { userId: user.id, purpose: "magic_link", usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
+    const token = generateSecureToken(32);
+    const expiresAt = new Date(Date.now() + MAGIC_LINK_TTL_MS);
+    await prisma.oneTimeToken.create({
+      data: { userId: user.id, purpose: "magic_link", tokenHash: hashToken(token), expiresAt },
+    });
+    const signInUrl = `${env.APP_ENV === "local" ? "http://localhost:3000" : ""}/magic-link?token=${token}`;
+    await this.sendEmail(
+      user.id,
+      user.email,
+      "Your sign-in link",
+      magicLinkEmailTemplate(signInUrl),
+      ctx,
+      "magic_link_sent",
+      "magic_link_send_failed",
+    );
+  }
+
+  async verifyMagicLink(
+    input: VerifyMagicLinkInput,
+    ctx: RequestContext,
+    existingSessionId?: string | null,
+  ): Promise<IssuedTokens & { userId: string }> {
+    const tokenHash = hashToken(input.token);
+    const record = await prisma.oneTimeToken.findUnique({ where: { tokenHash } });
+
+    if (!record || record.purpose !== "magic_link" || record.usedAt) {
+      throw new UnauthorizedException("This sign-in link is invalid or has already been used.");
+    }
+    if (isExpired(record.expiresAt)) {
+      throw new UnauthorizedException("This sign-in link has expired.");
+    }
+
+    // Same atomic-consume guard as verifyOtp above — a 32-byte token has no
+    // meaningful "attempts" concept (it's unguessable), but it can still be replayed
+    // or raced, so the same `usedAt: null` re-check at UPDATE time applies.
+    const consumed = await prisma.oneTimeToken.updateMany({
+      where: { id: record.id, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+    if (consumed.count === 0) {
+      throw new UnauthorizedException("This sign-in link is invalid or has already been used.");
+    }
+
+    if (existingSessionId) {
+      await prisma.session.updateMany({
+        where: { id: existingSessionId, revokedAt: null },
+        data: { revokedAt: new Date(), revokedReason: "superseded_by_new_login" },
+      });
+    }
+
+    const tokens = await this.createSession(record.userId, ctx);
+    await this.recordAuthEvent(record.userId, "magic_link_login_succeeded", ctx);
+    return { ...tokens, userId: record.userId };
   }
 
   async listSessions(userId: string) {

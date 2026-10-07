@@ -597,6 +597,113 @@ true)` (transaction-scoped).
    mode this component exists to prevent) — a bug worth documenting even though it
    was caught before being committed.
 
+### `AuthService.requestOtp` / `verifyOtp` — rewritten for Phase 6 (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Issues a CSPRNG 6-digit OTP (hash-only storage), invalidates any previous unused
+   OTP before issuing a new one, enforces a 30-second per-destination resend
+   cooldown, and consumes a code atomically on verify (`updateMany` guarded by
+   `usedAt: null`) so two concurrent submissions of the same code cannot both
+   succeed — fixes BUG-009 (see FINDINGS.md). On success, discards any session the
+   caller's existing cookie points at before issuing a new one (session-fixation
+   prevention, same pattern as Phase 5's `login()`).
+2. Called by `AuthController.requestOtp`/`verifyOtp` (`/auth/otp/request`,
+   `/auth/otp/verify`).
+3. Calls `prisma.oneTimeToken`, `generateSecureCode`/`hashToken`
+   (`@saas/security`), `this.sendEmail` (wraps `otpEmailTemplate`), `createSession`.
+4. Receives `{ email }` / `{ email, code }`, a request context, and (verify only)
+   an optional `existingSessionId`.
+5. Returns `void` (request) or `IssuedTokens & { userId }` (verify); throws
+   `UnauthorizedException("Invalid or expired code.")` on any failure.
+6. On failure: the SAME error message covers wrong code, expired code, exhausted
+   attempts, and unknown destination — no branch reveals which (checklist "OTP
+   enumeration protection").
+7. Secure: only `tokenHash` is ever persisted or logged; the raw code never reaches
+   the database, a log line, or a thrown error.
+8. **Fixed inconsistent-state risk**: the previous implementation consumed a code
+   via a separate `findFirst` then `update`, which let two concurrent correct
+   submissions both pass the `findFirst` before either flipped `usedAt` — i.e. the
+   same code could issue two sessions. The atomic `updateMany`-with-`usedAt: null`
+   guard closes this; see BUG-009.
+
+### `AuthService.requestMagicLink` / `verifyMagicLink` — new in Phase 6 (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Added to pragmatically resolve open question D4 (ARCHITECTURE.md), since the
+   Phase 6 task list itself specifies both an OTP code and a magic-link token.
+   Issues a 32-byte CSPRNG token (hash-only storage), same cooldown/invalidate-on-
+   resend pattern as OTP, and the same atomic-consume-via-`updateMany` guard (no
+   attempt counter, since the token's entropy makes guessing infeasible).
+2. Called by `AuthController.requestMagicLink`/`verifyMagicLink`
+   (`/auth/magic-link/request`, `/auth/magic-link/verify`), and by the confirm page
+   at `apps/web/src/app/(auth)/magic-link/magic-link-client.tsx`.
+3. Calls `prisma.oneTimeToken`, `generateSecureToken`/`hashToken`
+   (`@saas/security`), `this.sendEmail` (wraps `magicLinkEmailTemplate`),
+   `createSession`.
+4. Receives `{ email }` / `{ token }`, a request context, and (verify only) an
+   optional `existingSessionId`.
+5. Returns `void` (request) or `IssuedTokens & { userId }` (verify); throws
+   `UnauthorizedException("This sign-in link is invalid or has already been used.")`
+   on any failure.
+6. On failure: the same message covers an expired, already-used, or never-issued
+   token — enumeration-safe by construction.
+7. Secure: only `tokenHash` is persisted; the raw token never reaches the database,
+   a log line, or a thrown error.
+8. No inconsistent-state risk beyond the one shared with OTP (addressed by the same
+   atomic consume).
+
+### `resolveExistingSessionId` helper — deduplicated session-fixation check (`apps/api/src/auth/auth.controller.ts`) — Implemented
+
+1. Extracts the previously-inline "read the caller's current session cookie and
+   verify it, swallowing any error" logic (first written for `login()` in Phase 5)
+   into one shared private method, now also used by `/otp/verify` and
+   `/magic-link/verify`.
+2. Called by `login`, `verifyOtp`, `verifyMagicLink`.
+3. Calls `AuthService.verifyAccessToken`.
+4. Receives the raw `Request` (reads its cookie).
+5. Returns the existing session's id, or `null` if there is none or it's invalid.
+6. On failure: any verification error (expired/malformed/missing cookie) is treated
+   identically — `null`, never thrown.
+7. Secure: never logs the cookie value; a forged/expired cookie simply yields `null`
+   rather than being trusted.
+8. No inconsistent-state risk — read-only.
+
+### `MagicLinkClient` — confirm-page POST pattern (`apps/web/src/app/(auth)/magic-link/magic-link-client.tsx`) — Implemented
+
+1. Reads the token from the URL on mount, immediately strips it from the visible
+   address bar (same pattern as `VerifyEmailClient`), and only submits it via an
+   explicit `POST /auth/magic-link/verify` triggered by a user click on "Confirm
+   sign-in" — satisfies task 6 ("magic links open a confirm page that POSTs, so
+   link scanners cannot consume them") because a GET made by an automated link
+   scanner never reaches a route that consumes the token.
+2. Rendered by `apps/web/src/app/(auth)/magic-link/page.tsx` (also sets
+   `referrer: "no-referrer"` metadata, same rationale as `verify-email/page.tsx`).
+3. Calls `POST /auth/magic-link/verify`.
+4. Receives the `token` and `next` query params.
+5. Returns rendered UI; on success, links to the resolved (allowlist-checked)
+   redirect target.
+6. On failure: a single generic "this link no longer works" state covers expired,
+   already-used, and invalid tokens alike — never distinguishes which.
+7. Secure: `no-referrer` page metadata; redirect target is always allowlist-checked
+   via `isAllowedRedirect`.
+8. No inconsistent-state risk — purely client-side rendering logic.
+
+### `OtpClient` — request/verify UI with countdown (`apps/web/src/app/(auth)/otp/otp-client.tsx`) — Implemented
+
+1. Two-step UI (request email → enter code) satisfying task 8: a single code
+   input with `autoComplete="one-time-code"`, `inputMode="numeric"`, native paste
+   support (a plain text input accepts a pasted 6-digit string with no extra
+   handler), a resend button disabled during a 30-second countdown mirroring the
+   backend's cooldown, and cleared/distinct error states per attempt.
+2. Rendered by `apps/web/src/app/(auth)/otp/page.tsx`.
+3. Calls `POST /auth/otp/request`, `POST /auth/otp/verify`.
+4. Receives the `next` query param (for the post-verify redirect).
+5. Returns rendered UI; on success, navigates to the resolved redirect target.
+6. On failure: distinguishes timeout/offline/server error in the shown message,
+   same `describeError` pattern as `LoginForm`.
+7. Secure: redirect target is always allowlist-checked; the raw code only ever
+   lives in component state, never logged or persisted client-side.
+8. No inconsistent-state risk — a `submitLock` ref guards both the request and
+   verify handlers against a double-submit race, same pattern as `LoginForm`.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

@@ -18,12 +18,14 @@ import { loadPrivateEnv } from "@saas/config";
 import { sessionCookieOptions } from "@saas/security";
 import {
   loginSchema,
+  requestMagicLinkSchema,
   requestOtpSchema,
   requestPasswordResetSchema,
   resendVerificationSchema,
   resetPasswordSchema,
   signUpSchema,
   verifyEmailSchema,
+  verifyMagicLinkSchema,
   verifyOtpSchema,
 } from "@saas/validation";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
@@ -31,12 +33,14 @@ import { AuthService, type IssuedTokens } from "./auth.service.js";
 import { CurrentPrincipal } from "./current-principal.decorator.js";
 import type {
   LoginDto,
+  RequestMagicLinkDto,
   RequestOtpDto,
   RequestPasswordResetDto,
   ResendVerificationDto,
   ResetPasswordDto,
   SignUpDto,
   VerifyEmailDto,
+  VerifyMagicLinkDto,
   VerifyOtpDto,
 } from "./dto.js";
 import { PrincipalService } from "./principal.service.js";
@@ -87,6 +91,20 @@ export class AuthController {
     private principalService: PrincipalService,
   ) {}
 
+  /** Session fixation prevention, shared by every endpoint that can issue a new
+   * session (login, OTP verify, magic-link verify): resolve whatever session the
+   * caller's CURRENT cookie points at, if any/still valid, so the service method can
+   * discard it once the new session is issued. */
+  private resolveExistingSessionId(req: Request): string | null {
+    const existingAccessToken = req.cookies?.[env.AUTH_SESSION_COOKIE_NAME];
+    if (!existingAccessToken) return null;
+    try {
+      return this.authService.verifyAccessToken(existingAccessToken).sessionId;
+    } catch {
+      return null;
+    }
+  }
+
   @Post("signup")
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @UsePipes(new ZodValidationPipe(signUpSchema))
@@ -104,21 +122,11 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    // Session fixation prevention: resolve whatever session the caller's CURRENT
-    // cookie points at (if any/still valid) so AuthService.login can discard it once
-    // the new login succeeds. A missing/invalid/expired existing cookie is not an
-    // error here — it just means there is nothing to discard.
-    let existingSessionId: string | null = null;
-    const existingAccessToken = req.cookies?.[env.AUTH_SESSION_COOKIE_NAME];
-    if (existingAccessToken) {
-      try {
-        existingSessionId = this.authService.verifyAccessToken(existingAccessToken).sessionId;
-      } catch {
-        existingSessionId = null;
-      }
-    }
-
-    const tokens = await this.authService.login(dto, requestContext(req), existingSessionId);
+    const tokens = await this.authService.login(
+      dto,
+      requestContext(req),
+      this.resolveExistingSessionId(req),
+    );
     setSessionCookies(res, tokens);
     // No tokens in the response body when using cookies (checklist) — only a status
     // acknowledgement; the client re-derives auth state from GET /auth/me afterward.
@@ -210,7 +218,38 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const tokens = await this.authService.verifyOtp(dto, requestContext(req));
+    const tokens = await this.authService.verifyOtp(
+      dto,
+      requestContext(req),
+      this.resolveExistingSessionId(req),
+    );
+    setSessionCookies(res, tokens);
+    return { ok: true };
+  }
+
+  @Post("magic-link/request")
+  @HttpCode(200)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @UsePipes(new ZodValidationPipe(requestMagicLinkSchema))
+  async requestMagicLink(@Body() dto: RequestMagicLinkDto, @Req() req: Request) {
+    await this.authService.requestMagicLink(dto, requestContext(req));
+    return { message: "If an account exists for this email, a sign-in link has been sent." };
+  }
+
+  @Post("magic-link/verify")
+  @HttpCode(200)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UsePipes(new ZodValidationPipe(verifyMagicLinkSchema))
+  async verifyMagicLink(
+    @Body() dto: VerifyMagicLinkDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const tokens = await this.authService.verifyMagicLink(
+      dto,
+      requestContext(req),
+      this.resolveExistingSessionId(req),
+    );
     setSessionCookies(res, tokens);
     return { ok: true };
   }

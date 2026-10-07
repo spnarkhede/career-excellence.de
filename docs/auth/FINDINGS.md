@@ -459,3 +459,68 @@ pnpm test && pnpm db:check-consistency` against a real, disposable Postgres data
   disabled/deleted tests all submit the correct password to reach the status check —
   written, not yet executed against a real database (see the environment-limitation
   note carried forward from Phases 3/4).
+
+### BUG-009: `verifyOtp()` consumed a one-time code via a non-atomic `findFirst` + `update`, letting two concurrent correct submissions both succeed
+
+- **Label:** Confirmed bug
+- **Severity:** HIGH — this is exactly the "exactly one succeeds" guarantee Phase 6's
+  own task list and test list require for a one-time code; failing it means a single
+  OTP or magic-link token could be used to create two independent sessions, which for
+  a code delivered over a channel with any chance of interception (email forwarding,
+  a shared inbox, a slow network causing a user to double-submit) weakens the
+  "single use" security property the whole mechanism exists to provide.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/auth.service.ts`, method `verifyOtp` (the
+  pre-existing implementation, before this phase's rewrite)
+- **Exact location:** The code-consumption step at the end of `verifyOtp` — a
+  `prisma.oneTimeToken.findFirst({ where: { ..., usedAt: null } })` followed by a
+  separate `prisma.oneTimeToken.update({ where: { id: record.id }, data: { usedAt: new Date() } })`.
+- **Problem:** Between the `findFirst` read and the `update` write there is a window
+  in which a second, concurrent call with the same code can also pass the same
+  `findFirst` (since neither call has written `usedAt` yet), so both calls proceed to
+  `update` and both succeed — each issuing its own session.
+- **Root cause:** The check-then-act sequence (`findFirst` to decide validity, then a
+  separate `update` to mark it used) is not atomic at the database level; Postgres
+  gives no isolation between the two statements unless they are combined into one
+  conditional write. This is a textbook TOCTOU (time-of-check to time-of-use) race,
+  and this phase's explicit test requirement ("concurrent use of one code, exactly
+  one succeeds") was written specifically to catch exactly this class of bug.
+- **Trigger:** Two requests hitting `POST /auth/otp/verify` (or the magic-link
+  equivalent) with the same valid, unused code/token at nearly the same time — e.g. a
+  user double-clicking "Verify," a retried request after a slow/ambiguous response, or
+  a deliberate replay attempt timed to race the original.
+- **Impact:** Prior to this fix, a single one-time code could issue more than one
+  session, undermining the "single use" guarantee required by task 2 ("Single use,
+  marked used atomically") and checklist item 7 ("OTP replay prevention").
+- **Reproduction steps:** 1) Request an OTP. 2) Fire two `verifyOtp` calls with the
+  identical correct code via `Promise.allSettled` (no `await` between them). 3) Prior
+  to the fix, observe both resolve successfully with distinct session tokens.
+- **Expected behavior:** Exactly one of the two concurrent calls succeeds; the other
+  is rejected with the same "invalid or expired" response as any other failed
+  verification (enumeration-safe — it must not reveal "someone else already used
+  this").
+- **Actual behavior:** Both succeeded, prior to this fix.
+- **Why it happens:** See root cause.
+- **Related components:** The same non-atomic pattern did not exist in
+  `verifyEmail`/`resetPassword` (Phase 4), which already used this correct atomic
+  pattern — `verifyOtp` was the one method that had drifted from it, which is why this
+  phase's dedicated concurrency test was written to check explicitly rather than
+  assuming consistency across sibling methods. The new `verifyMagicLink` (Phase 6) was
+  written directly against the corrected pattern from the start, so it was never
+  exposed to this bug.
+- **Recommended fix (applied):** Replaced the `findFirst` + `update` pair with a
+  single atomic `prisma.oneTimeToken.updateMany({ where: { id: record.id, usedAt: null }, data: { usedAt: new Date() } })`, then checked `result.count === 0` to detect
+  and reject the losing racer. Postgres's row-level locking during the `UPDATE`
+  guarantees only one concurrent caller can match `usedAt: null` and complete the
+  write; the other sees `count === 0` and is rejected. The same pattern was reused
+  for `verifyMagicLink`.
+- **Regression risk:** Low — the external behavior for the non-concurrent (overwhelming
+  majority) case is unchanged; the only behavioral difference is specifically in the
+  concurrent-race case, which previously succeeded incorrectly and now correctly
+  rejects the loser.
+- **How to test the fix:** `apps/api/test/phase6-otp.integration.spec.ts`'s "lets
+  exactly one of two concurrent verifications with the same code succeed" test (and
+  its magic-link equivalent) — written as a real (non-mocked) integration test using
+  `Promise.allSettled`, structured to skip cleanly via `isDatabaseReachable()` since no
+  live database is available in this session; status is Requires manual verification,
+  not Confirmed working, per AUTH_RULES.md rule 13.
