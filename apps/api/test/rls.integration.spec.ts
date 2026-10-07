@@ -27,16 +27,12 @@ describe("row-level security (real database)", () => {
     if (!dbReachable) return;
 
     const authService = new AuthService();
-    const a = await authService.signUp(
-      { email: `${EMAIL_PREFIX}user-a@example.test`, password: TEST_PASSWORD },
-      ctx,
-    );
-    const b = await authService.signUp(
-      { email: `${EMAIL_PREFIX}user-b@example.test`, password: TEST_PASSWORD },
-      ctx,
-    );
-    userAId = a.id;
-    userBId = b.id;
+    const emailA = `${EMAIL_PREFIX}user-a@example.test`;
+    const emailB = `${EMAIL_PREFIX}user-b@example.test`;
+    await authService.signUp({ email: emailA, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email: emailB, password: TEST_PASSWORD }, ctx);
+    userAId = (await prisma.user.findUniqueOrThrow({ where: { email: emailA } })).id;
+    userBId = (await prisma.user.findUniqueOrThrow({ where: { email: emailB } })).id;
   });
 
   afterAll(async () => {

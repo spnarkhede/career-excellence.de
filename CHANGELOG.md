@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-07
+
+### Added
+
+- NIST SP 800-63B password policy (`packages/validation`): minimum 8, hard cap 128,
+  no composition rules, every printable character allowed; replaces the previous
+  min-12-plus-composition-rules policy. Added `estimatePasswordStrength` (client-safe,
+  UX-only) and wired a strength meter + policy text into the signup page.
+- `packages/security/src/server.ts`: explicit OWASP argon2id parameters
+  (`ARGON2_PARAMS`: 19 MiB, t=2, p=1), `needsRehash` (rehash-on-login when parameters
+  change), and `isPasswordBreached` (HIBP k-anonymity range API, fails open), gated
+  behind the new `FEATURE_BREACHED_PASSWORD_CHECK` env var (default off).
+- `AuthService.signUp`: timing/response-neutral duplicate handling — hashes and
+  (optionally) breach-checks the password before ever branching on whether the email
+  exists; a duplicate creates nothing and sends a notice email to the real account
+  owner, while the caller sees the same response shape either way.
+- `AuthService.sendVerificationEmail`: resend now invalidates every older unused
+  token before issuing a new one. New `POST /auth/resend-verification` endpoint,
+  rate-limited per-IP (`@Throttle`) and per-email (a cooldown inside the service).
+- `AuthService.verifyEmail`: returns one of 5 distinct states (`valid`, `expired`,
+  `already_used`, `invalid`, `already_verified`) instead of a single generic error,
+  so the UI can offer the right recovery action for each.
+- `AuthService.sendEmail`: delivery-failure-tolerant wrapper — logs with the request
+  ID and records a distinct `auth_event` on failure, but never throws (signup/resend
+  still succeeds; the user can retry).
+- Rewrote the verify-email page: a Confirm **button** (no auto-POST on page load),
+  `referrer: no-referrer` page metadata, the token stripped from the visible URL on
+  load, and a redirect-after-verification target validated through
+  `isAllowedRedirect`.
+- 15 new integration tests (`apps/api/test/phase4-signup-verification.integration.spec.ts`,
+  `get-verification-url.integration.spec.ts`) covering all 16 of this phase's checklist
+  items plus the 3 extra named tests (GET doesn't verify, no raw token in DB/logs,
+  forced mid-transaction failure leaves no rows).
+
+### Fixed
+
+- **BUG-007 (high severity)**: `login()` never checked for `pending_verification`
+  status — an account that never verified its email could sign in exactly as if it
+  had, completely bypassing the verification gate. Fixed by rejecting login for
+  unverified accounts, checked only _after_ password verification succeeds (checking
+  before would itself be an enumeration vector).
+
+### Notes
+
+- Same environment limitation as Phase 3: no live Postgres database was available in
+  this session. Every DB-dependent test is written and will run for real in CI; two
+  test suites needed no database and were actually run
+  (`packages/validation/src/index.spec.ts` 8/8, `packages/security/src/server.spec.ts`
+  25/25).
+
 ## [0.4.0] - 2026-10-07
 
 ### Added
@@ -152,7 +202,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and creates a git tag.
 - References to AUTH_RULES.md from CLAUDE.md and AGENTS.md.
 
-[Unreleased]: https://example.com/compare/v0.4.0...HEAD
+[Unreleased]: https://example.com/compare/v0.5.0...HEAD
+[0.5.0]: https://example.com/compare/v0.4.0...v0.5.0
 [0.4.0]: https://example.com/compare/v0.3.0...v0.4.0
 [0.3.0]: https://example.com/compare/v0.2.0...v0.3.0
 [0.2.0]: https://example.com/compare/v0.1.0...v0.2.0

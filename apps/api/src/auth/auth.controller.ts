@@ -20,6 +20,7 @@ import {
   loginSchema,
   requestOtpSchema,
   requestPasswordResetSchema,
+  resendVerificationSchema,
   resetPasswordSchema,
   signUpSchema,
   verifyEmailSchema,
@@ -32,6 +33,7 @@ import type {
   LoginDto,
   RequestOtpDto,
   RequestPasswordResetDto,
+  ResendVerificationDto,
   ResetPasswordDto,
   SignUpDto,
   VerifyEmailDto,
@@ -141,10 +143,20 @@ export class AuthController {
   }
 
   @Post("verify-email")
+  @HttpCode(200)
   @UsePipes(new ZodValidationPipe(verifyEmailSchema))
   async verifyEmail(@Body() dto: VerifyEmailDto, @Req() req: Request) {
-    await this.authService.verifyEmail(dto, requestContext(req));
-    return { ok: true };
+    const reason = await this.authService.verifyEmail(dto, requestContext(req));
+    return { reason };
+  }
+
+  @Post("resend-verification")
+  @HttpCode(200)
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @UsePipes(new ZodValidationPipe(resendVerificationSchema))
+  async resendVerification(@Body() dto: ResendVerificationDto, @Req() req: Request) {
+    await this.authService.resendVerification(dto.email, requestContext(req));
+    return { message: "If an account needs verification, a new link has been sent." };
   }
 
   @Post("password-reset/request")

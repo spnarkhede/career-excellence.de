@@ -1,20 +1,24 @@
 import jwt from "jsonwebtoken";
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  UnauthorizedException,
-} from "@nestjs/common";
+import { BadRequestException, Injectable, UnauthorizedException } from "@nestjs/common";
 import { generateNumericOtp, issueOneTimeToken } from "@saas/auth";
 import { loadPrivateEnv } from "@saas/config";
 import { prisma, type Prisma } from "@saas/database";
 import {
+  duplicateSignupNoticeTemplate,
   otpEmailTemplate,
   passwordResetEmailTemplate,
   StubEmailProvider,
   verificationEmailTemplate,
 } from "@saas/email";
-import { hashIp, hashPassword, hashToken, verifyPassword } from "@saas/security/server";
+import { logger } from "@saas/observability";
+import {
+  hashIp,
+  hashPassword,
+  hashToken,
+  isPasswordBreached,
+  needsRehash,
+  verifyPassword,
+} from "@saas/security/server";
 import { generateSecureToken, isExpired } from "@saas/utils";
 import type {
   LoginInput,
@@ -38,6 +42,14 @@ export interface IssuedTokens {
   sessionId: string;
   refreshExpiresAt: Date;
 }
+
+// None of these reveal whether an email is registered — they describe the TOKEN's
+// state, not the account's. "already_verified" and "already_used" are deliberately
+// distinct even though both currently reuse the token's `usedAt` field (see
+// sendVerificationEmail's invalidation comment) — the UI can offer the same recovery
+// action (resend) for either, but the backend tells them apart for clearer messaging.
+export type VerifyEmailReason =
+  "valid" | "expired" | "already_used" | "invalid" | "already_verified";
 
 const env = loadPrivateEnv();
 
@@ -130,20 +142,50 @@ export class AuthService {
     return { accessToken, refreshToken, sessionId: session.id, refreshExpiresAt };
   }
 
-  async signUp(input: SignUpInput, ctx: RequestContext) {
+  async signUp(
+    input: SignUpInput,
+    ctx: RequestContext,
+  ): Promise<{ email: string; status: "pending_verification" }> {
     const existing = await prisma.user.findUnique({ where: { email: input.email } });
+
+    // Hash (and, if enabled, breach-check) unconditionally on BOTH branches, in the
+    // same order, before ever branching on whether the account exists — timing alone
+    // must not reveal which case this was (checklist: "same response and similar
+    // timing for new and existing emails").
+    const passwordHash = await hashPassword(input.password);
+    const breached = env.FEATURE_BREACHED_PASSWORD_CHECK
+      ? await isPasswordBreached(input.password)
+      : false;
+
     if (existing) {
-      // Account enumeration is intentionally avoided for login/reset, but signup
-      // must tell the user their email is taken so they don't create a duplicate.
-      throw new ConflictException("An account with this email already exists.");
+      // Create nothing. Notify the real account owner so they know someone attempted
+      // this; the person submitting the form sees exactly the same response as a
+      // successful signup either way (never told the email is taken).
+      await this.sendEmail(
+        existing.id,
+        existing.email,
+        "Someone tried to sign up with your email",
+        duplicateSignupNoticeTemplate(),
+        ctx,
+        "duplicate_signup_notice_sent",
+        "duplicate_signup_notice_failed",
+      );
+      await this.recordAuthEvent(existing.id, "signup_duplicate_attempt", ctx);
+      return { email: input.email, status: "pending_verification" };
     }
 
-    const passwordHash = await hashPassword(input.password);
+    if (breached) {
+      throw new BadRequestException(
+        "This password has appeared in a known data breach. Please choose a different one.",
+      );
+    }
 
     // Single transaction: user + profile (nested create, same statement) + default
     // role assignment. This closes a previously-known gap (see docs/auth/FINDINGS.md)
     // where the role assignment happened as a separate, non-atomic round trip —
-    // a crash between the two calls left an orphaned user with no role.
+    // a crash between the two calls left an orphaned user with no role. Any failure
+    // anywhere in this block (including the role lookup) rolls back the entire thing —
+    // no partial user is ever left behind (checklist: "Partial account creation").
     const user = await prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
         data: {
@@ -163,42 +205,100 @@ export class AuthService {
       return created;
     });
 
-    await this.sendVerificationEmail(user.id, user.email);
+    await this.sendVerificationEmail(user.id, user.email, ctx);
     await this.recordAuthEvent(user.id, "signup", ctx);
 
-    return { id: user.id, email: user.email, status: user.status };
+    return { email: user.email, status: "pending_verification" };
   }
 
-  private async sendVerificationEmail(userId: string, email: string) {
+  /** Delivery-failure-tolerant send: logs with the request ID and records a distinct
+   * auth_event on failure, but never throws — the caller's own action (signup, resend)
+   * must still succeed so the user can retry via the resend endpoint. */
+  private async sendEmail(
+    userId: string,
+    to: string,
+    subject: string,
+    html: string,
+    ctx: RequestContext,
+    sentEventType: string,
+    failedEventType: string,
+  ): Promise<void> {
+    try {
+      await emailProvider.send({ to, subject, html });
+      await this.recordAuthEvent(userId, sentEventType, ctx);
+    } catch (err) {
+      logger.error({ err, requestId: ctx.requestId, userId }, "Email delivery failed");
+      await this.recordAuthEvent(userId, failedEventType, ctx);
+    }
+  }
+
+  private async sendVerificationEmail(
+    userId: string,
+    email: string,
+    ctx: RequestContext,
+  ): Promise<void> {
+    // Resend invalidates older tokens: any still-unused verify_email token for this
+    // user is marked used (i.e. no longer usable) before a new one is issued, so only
+    // the most recently sent link ever works — never two live links at once.
+    await prisma.oneTimeToken.updateMany({
+      where: { userId, purpose: "verify_email", usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
     const { token, expiresAt } = issueOneTimeToken(userId, "verify_email", 60 * 60 * 24);
     await prisma.oneTimeToken.create({
       data: { userId, purpose: "verify_email", tokenHash: hashToken(token), expiresAt },
     });
     const verifyUrl = `${env.APP_ENV === "local" ? "http://localhost:3000" : ""}/verify-email?token=${token}`;
-    await emailProvider.send({
-      to: email,
-      subject: "Confirm your email address",
-      html: verificationEmailTemplate(verifyUrl),
-    });
+    await this.sendEmail(
+      userId,
+      email,
+      "Confirm your email address",
+      verificationEmailTemplate(verifyUrl),
+      ctx,
+      "verification_sent",
+      "verification_send_failed",
+    );
   }
 
   async resendVerification(email: string, ctx: RequestContext): Promise<void> {
     const user = await prisma.user.findUnique({ where: { email } });
-    // Always behave the same way whether or not the account exists.
-    if (user && user.status === "pending_verification") {
-      await this.sendVerificationEmail(user.id, user.email);
-      await this.recordAuthEvent(user.id, "resend_verification", ctx);
+    // Always record the attempt and always return the same way, whether or not the
+    // account exists — checklist: "same response for known and unknown emails".
+    await this.recordAuthEvent(user?.id ?? null, "verification_resend_requested", ctx);
+
+    if (!user || user.status !== "pending_verification") return;
+
+    // Per-email cooldown (distinct from the per-IP @Throttle on the controller route):
+    // refuse to re-send more than once within this window, but still respond exactly
+    // as if it had sent — the caller can't distinguish "just sent" from "rate limited".
+    const RESEND_COOLDOWN_MS = 60_000;
+    const lastToken = await prisma.oneTimeToken.findFirst({
+      where: { userId: user.id, purpose: "verify_email" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (lastToken && Date.now() - lastToken.createdAt.getTime() < RESEND_COOLDOWN_MS) {
+      return;
     }
+
+    await this.sendVerificationEmail(user.id, user.email, ctx);
   }
 
-  async verifyEmail(input: VerifyEmailInput, ctx: RequestContext): Promise<void> {
+  async verifyEmail(input: VerifyEmailInput, ctx: RequestContext): Promise<VerifyEmailReason> {
     const tokenHash = hashToken(input.token);
     const record = await prisma.oneTimeToken.findUnique({ where: { tokenHash } });
-    if (!record || record.purpose !== "verify_email" || record.usedAt) {
-      throw new BadRequestException("This verification link is invalid or has already been used.");
+
+    if (!record || record.purpose !== "verify_email") {
+      return "invalid";
     }
+
+    if (record.usedAt) {
+      const user = await prisma.user.findUnique({ where: { id: record.userId } });
+      return user?.emailVerifiedAt ? "already_verified" : "already_used";
+    }
+
     if (isExpired(record.expiresAt)) {
-      throw new BadRequestException("This verification link has expired.");
+      return "expired";
     }
 
     await prisma.$transaction([
@@ -213,6 +313,7 @@ export class AuthService {
     ]);
 
     await this.recordAuthEvent(record.userId, "email_verified", ctx);
+    return "valid";
   }
 
   async login(input: LoginInput, ctx: RequestContext): Promise<IssuedTokens & { userId: string }> {
@@ -252,11 +353,29 @@ export class AuthService {
       throw new UnauthorizedException("Invalid email or password.");
     }
 
+    // Checked only AFTER the password has been confirmed correct — revealing
+    // "unverified" before that would let anyone probe whether an email is registered
+    // and pending verification using any password at all (an enumeration vector).
+    // Once the password is right, telling the account's own owner they still need to
+    // verify leaks nothing they don't already know.
+    if (user.status === "pending_verification") {
+      await this.recordAuthEvent(user.id, "login_blocked_unverified", ctx);
+      throw new UnauthorizedException("Please verify your email address before signing in.");
+    }
+
     if (user.failedLoginCount > 0 || user.status === "locked") {
       await prisma.user.update({
         where: { id: user.id },
         data: { failedLoginCount: 0, lockedUntil: null, status: "active" },
       });
+    }
+
+    // Rehash on login when parameters change: a password that verified successfully
+    // against the OLD hash is rehashed with the current ARGON2_PARAMS, so every
+    // stored hash converges on the current target over time without a mass rehash.
+    if (needsRehash(user.passwordHash)) {
+      const newHash = await hashPassword(input.password);
+      await prisma.user.update({ where: { id: user.id }, data: { passwordHash: newHash } });
     }
 
     const tokens = await this.createSession(user.id, ctx);
@@ -344,6 +463,12 @@ export class AuthService {
     }
     if (isExpired(record.expiresAt)) {
       throw new BadRequestException("This reset link has expired.");
+    }
+
+    if (env.FEATURE_BREACHED_PASSWORD_CHECK && (await isPasswordBreached(input.password))) {
+      throw new BadRequestException(
+        "This password has appeared in a known data breach. Please choose a different one.",
+      );
     }
 
     const passwordHash = await hashPassword(input.password);

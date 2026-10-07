@@ -358,3 +358,55 @@ COLUMN "id" UUID NOT NULL` — on a non-empty table, this is equivalent to assig
   with the real failure and its root cause before claiming Phase 3 done.
 - **How to test:** `pnpm --filter @saas/database migrate:deploy && pnpm db:seed &&
 pnpm test && pnpm db:check-consistency` against a real, disposable Postgres database.
+
+### BUG-007: `login()` never checked for an unverified (`pending_verification`) account — the email-verification gate could be silently bypassed
+
+- **Label:** Confirmed bug
+- **Severity:** HIGH — an account whose email was never verified could sign in and
+  use the application exactly as if it had been verified, defeating the entire point
+  of the email-verification flow (e.g. confirming the email address is reachable and
+  really belongs to the signer-upper) with no error, no warning, and no trace other
+  than `emailVerifiedAt` being `null` on an otherwise-functioning account.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/auth.service.ts`, method `login`
+- **Exact location:** The sequence of status checks at the top of `login()` (checks
+  for `locked`, `disabled`, `deleted` existed; `pending_verification` was never
+  checked at all).
+- **Problem:** `AuthService.login` validated credentials and several other status
+  values but had no branch for `pending_verification` — the status every account
+  starts in and stays in until `verifyEmail` succeeds.
+- **Root cause:** When `login()` was first written (Phase 3), the status-check list
+  was built against the enum's _other_ values (`locked`/`disabled`/`deleted`) as a
+  blocklist, and `pending_verification` — being the _default_, not an edge case — was
+  never added to it. The gap had no test exercising it until this phase's explicit
+  checklist item 6 ("Unverified login") required writing one.
+- **Trigger:** Sign up, skip verification entirely, log in with the correct password.
+- **Impact:** Complete bypass of the email-verification security control for any
+  account, from the moment of signup, prior to this fix.
+- **Reproduction steps:** 1) `POST /auth/signup` with a new email/password. 2) Without visiting the verification link, `POST /auth/login` with the same
+  credentials. 3) Observe a successful session is issued.
+- **Expected behavior:** Login is rejected with a message telling the user to verify
+  their email first.
+- **Actual behavior:** Login succeeded, prior to this fix.
+- **Why it happens:** See root cause.
+- **Related components:** `PrincipalService.resolve` (checked separately and
+  correctly rejects `disabled`/`deleted`/`locked`, but — same gap — never checked
+  `pending_verification` either; not fixed there since the login-time check is
+  sufficient to prevent an unverified session from ever being _issued_ in the first
+  place, so `PrincipalService` never sees one post-fix).
+- **Recommended fix (applied):** Added an explicit `pending_verification` check in
+  `login()`, placed **after** password verification succeeds — checking status before
+  confirming the password would let anyone probe whether an email is registered and
+  unverified using any password at all, which is itself an enumeration vector this fix
+  had to avoid introducing.
+- **Regression risk:** Low — the added branch only narrows existing behavior (rejects
+  a case that previously incorrectly succeeded); every other status/credential
+  combination is unchanged. Verified via
+  `apps/api/test/phase4-signup-verification.integration.spec.ts`'s "Unverified login"
+  test (written, not yet executed against a real database — see the environment-
+  limitation note above).
+- **How to test the fix:** Sign up, attempt login before verifying, confirm it's
+  rejected with the "verify your email" message (not the generic invalid-credentials
+  message); confirm a _wrong_ password on the same unverified account still gets the
+  generic message (proving the distinct message is unreachable without the correct
+  password first).

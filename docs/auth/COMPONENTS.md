@@ -309,6 +309,154 @@ true)` (transaction-scoped).
 7. Secure: read-only; ids only, never credential data.
 8. No inconsistent-state risk — it only reports, never fixes.
 
+## Phase 4 components (signup, password creation, email verification)
+
+### `AuthService.signUp` — timing/response-neutral duplicate handling (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Hashes the password and (if the breach-check flag is on) checks it against HIBP
+   _before_ branching on whether the email already exists, so both branches do the
+   same work in the same order — timing alone can't reveal which case it was. If the
+   email exists, sends a notice email to the real owner and creates nothing; otherwise
+   creates user+profile+role in one transaction.
+2. Called by `AuthController.signUp`.
+3. Calls `hashPassword`, `isPasswordBreached`, `prisma.$transaction`, `sendEmail`.
+4. Receives the signup DTO + request context.
+5. Returns `{ email, status: "pending_verification" }` on **both** branches — never
+   the real existing user's id, only an echo of the caller's own submitted email.
+6. On failure: the transaction rolls back entirely; a breached password throws a
+   typed 400, but only on the real (non-duplicate) path.
+7. Secure: never reveals account existence via response shape or (by design intent)
+   timing; the duplicate-branch notice email goes only to the real account's address,
+   never surfaced to the caller.
+8. No inconsistent-state risk — the duplicate branch writes nothing to `users`.
+
+### `AuthService.sendEmail` / delivery-failure handling (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Wraps every outbound email in try/catch; on success records a `*_sent` auth_event,
+   on failure logs via the redacting logger (with `requestId`) and records a distinct
+   `*_failed` auth_event — never throws either way.
+2. Called by `sendVerificationEmail` and the duplicate-signup-notice path in `signUp`.
+3. Calls the module-level `EmailProvider` singleton, `logger.error`, `recordAuthEvent`.
+4. Receives recipient, subject, HTML, context, and the two event-type names to log.
+5. Returns `void` always.
+6. On failure: the caller's own action (signup, resend) still succeeds — delivery
+   failure is recoverable via the resend endpoint, never a hard failure of signup.
+7. Secure: the logged error object is passed through the structured logger, which
+   deep-redacts sensitive keys; the email body/token are never logged.
+8. No inconsistent-state risk.
+
+### `AuthService.sendVerificationEmail` — resend invalidation (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Marks every existing unused `verify_email` token for the user as used (i.e.
+   invalidated) before issuing a new one, so only the most recently sent link is ever
+   valid.
+2. Called by `signUp` and `resendVerification`.
+3. Calls `prisma.oneTimeToken.updateMany`/`create`, `issueOneTimeToken`, `hashToken`,
+   `sendEmail`.
+4. Receives `userId`, `email`, request context.
+5. Returns `void`.
+6. On failure: an invalidation that succeeds followed by a failed new-token create
+   would leave the user with zero valid tokens (recoverable via resend) rather than
+   two valid ones simultaneously — fails toward the safer state.
+7. Secure: the raw token is never persisted, only `hashToken(token)`; never logged.
+8. **Documented decision**: reuses `usedAt` as "no longer valid" for both "actually
+   consumed" and "superseded by a newer token" — see `FINDINGS.md`/`ARCHITECTURE.md`
+   for the reasoning (avoids a schema change this late in the phase for a UI-only
+   distinction).
+
+### `AuthService.verifyEmail` — 5 distinct states (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Returns one of `valid | expired | already_used | invalid | already_verified`
+   instead of throwing — lets the controller/UI present a specific recovery action per
+   state without ever branching on whether an _email_ (as opposed to a _token_) is
+   registered.
+2. Called by `AuthController.verifyEmail`.
+3. Calls `prisma.oneTimeToken.findUnique`, `prisma.user.findUnique`, `$transaction`.
+4. Receives the raw token from the request body (never the URL — see the frontend
+   component below).
+5. Returns a `VerifyEmailReason` string.
+6. On failure: n/a — every outcome is a normal return value, not an exception.
+7. Secure: none of the 5 reasons reveal whether any particular email is registered —
+   they describe the token's state only.
+8. No inconsistent-state risk — the only state-mutating branch (`valid`) is itself a
+   transaction.
+
+### `AuthController` `/auth/resend-verification` (`apps/api/src/auth/auth.controller.ts`) — Implemented
+
+1. New endpoint (did not exist before this phase) accepting `{ email }`, rate-limited
+   per-IP via `@Throttle` (3/min) and per-email via a cooldown inside
+   `AuthService.resendVerification`.
+2. Called by the verify-email page's resend form.
+3. Calls `AuthService.resendVerification`.
+4. Receives a Zod-validated email.
+5. Returns the same message regardless of whether the email exists or is already
+   verified.
+6. On failure: n/a — the service method never throws.
+7. Secure: this is the literal "same response for known and unknown emails" checklist
+   item.
+8. No inconsistent-state risk.
+
+### `VerifyEmailClient` (`apps/web/src/app/(auth)/verify-email/verify-email-client.tsx`) — Implemented
+
+1. Renders a "Confirm email" **button** (no auto-submit on page load); only an
+   explicit click POSTs the token. Strips the token from the visible URL via
+   `history.replaceState` immediately on mount, before any confirmation happens.
+   Renders distinct UI (with a resend form where relevant) for each of the 5
+   `VerifyEmailReason` values.
+2. Rendered by `apps/web/src/app/(auth)/verify-email/page.tsx` (a server component
+   that also sets `metadata.referrer = "no-referrer"` for this route).
+3. Calls `POST /auth/verify-email`, `POST /auth/resend-verification`,
+   `isAllowedRedirect` (from `@saas/security`) for the post-verification redirect
+   target.
+4. Receives the `token` and optional `next` query params.
+5. Returns rendered UI; on success, a link to the allowlisted redirect target (never
+   an arbitrary `next` value).
+6. On failure: shows the specific reason's message + a resend form; never auto-
+   retries, never silently redirects.
+7. Secure: this is the literal implementation of checklist items 5 ("Confirm button...
+   mail scanners using GET cannot consume it", "Referrer Policy no-referrer", "token
+   removed from the address bar") and 14 ("Verification redirect only to allowlisted
+   internal paths through the safe redirect helper").
+8. No inconsistent-state risk — purely client-side rendering logic.
+
+### Password policy & strength estimate (`packages/validation/src/index.ts`) — Implemented
+
+1. `passwordSchema`: NIST SP 800-63B — minimum 8, hard cap 128, no composition rules,
+   every printable character allowed. `estimatePasswordStrength`: a pure, client-safe
+   UX estimate (length + character-class variety) for the signup form's meter — never
+   used for enforcement.
+2. `passwordSchema` is called by every signup/reset DTO (server, via
+   `ZodValidationPipe`) and by the signup/reset forms (client, via
+   `zodResolver`). `estimatePasswordStrength` is called only by the signup page.
+3. Calls nothing — pure functions.
+4. Receives a password string.
+5. Returns a parsed/validated string, or a `{score, label}` pair.
+6. On failure: Zod throws with a field-level message; the client form shows it inline.
+7. Secure: replaces the previous min-12-plus-composition-rules policy, which NIST
+   800-63B specifically advises against (composition rules push users toward
+   predictable, guessable patterns without improving real resistance to attack).
+8. No inconsistent-state risk.
+
+### `isPasswordBreached` / `needsRehash` / explicit argon2id params (`packages/security/src/server.ts`) — Implemented
+
+1. `isPasswordBreached`: k-anonymity check against the HIBP range API (only a 5-char
+   SHA-1 prefix ever leaves the process); fails open on any network/API error.
+   `needsRehash`: compares an existing hash's parameters against the current
+   `ARGON2_PARAMS` target. `ARGON2_PARAMS` itself: explicit OWASP-recommended values
+   (19 MiB, t=2, p=1) instead of the argon2 library's own defaults.
+2. `isPasswordBreached` called by `AuthService.signUp`/`resetPassword`, gated behind
+   `env.FEATURE_BREACHED_PASSWORD_CHECK` (default off). `needsRehash` called by
+   `AuthService.login` after a successful password verification.
+3. `isPasswordBreached` calls the HIBP API via `fetch`. `needsRehash` calls
+   `argon2.needsRehash`.
+4. Receive a plaintext password / an existing hash, respectively.
+5. Return a boolean.
+6. On failure: `isPasswordBreached` returns `false` (fails open — an HIBP outage must
+   never block signup/reset) rather than throwing.
+7. Secure: the real password and even its full hash never leave the process — only a
+   5-character hex prefix is sent, matching the k-anonymity protocol exactly.
+8. No inconsistent-state risk.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

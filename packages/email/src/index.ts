@@ -27,3 +27,10 @@ export function passwordResetEmailTemplate(resetUrl: string): SendEmailInput["ht
 export function otpEmailTemplate(code: string): SendEmailInput["html"] {
   return `<p>Your one-time verification code is:</p><p style="font-size:24px;font-weight:bold;">${code}</p><p>This code expires shortly.</p>`;
 }
+
+/** Sent when someone tries to sign up with an email that already has an account — no
+ * account is created; this notifies the real owner without confirming anything to the
+ * person who submitted the form (who never sees a different response either way). */
+export function duplicateSignupNoticeTemplate(): SendEmailInput["html"] {
+  return `<p>Someone just tried to create a new account using this email address, which already has an account.</p><p>If this was you, you can simply sign in instead. If it wasn't you, no action is needed — no new account was created, and your existing account is unaffected.</p>`;
+}

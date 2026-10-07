@@ -27,6 +27,11 @@ export const privateEnvSchema = z.object({
   AUTH_REFRESH_TOKEN_TTL: z.coerce.number().int().positive().default(2_592_000),
   AUTH_SESSION_COOKIE_NAME: z.string().default("app_session"),
   AUTH_REFRESH_COOKIE_NAME: z.string().default("app_refresh"),
+  // Checks new/changed passwords against the HIBP k-anonymity range API (never sends
+  // the plaintext password or full hash — see @saas/security/server isPasswordBreached).
+  // Off by default: an external dependency on the signup/reset path should be an
+  // explicit opt-in, not a surprise outage risk.
+  FEATURE_BREACHED_PASSWORD_CHECK: z.coerce.boolean().default(false),
 
   API_PORT: z.coerce.number().int().positive().default(4000),
   API_COOKIE_DOMAIN: z.string().default("localhost"),
