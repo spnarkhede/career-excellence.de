@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import jwt from "jsonwebtoken";
 import {
   BadRequestException,
@@ -28,6 +29,7 @@ import {
 } from "@saas/security/server";
 import { generateSecureToken, isExpired } from "@saas/utils";
 import type {
+  ChangePasswordInput,
   LoginInput,
   RequestMagicLinkInput,
   RequestOtpInput,
@@ -97,6 +99,39 @@ const MAGIC_LINK_TTL_MS = 10 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
 const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
 
+// Phase 7: access tokens are signed with asymmetric RS256, never the shared-secret
+// HS256 used before this phase — a leaked verification key (the PUBLIC half)
+// can't be used to forge tokens, unlike a leaked HMAC secret. (RS256 was chosen
+// over the other spec-allowed option, EdDSA, because @types/jsonwebtoken@9.0.10's
+// Algorithm union doesn't include "EdDSA" yet, even though the underlying
+// library/Node both support it — RS256 avoids fighting the type definitions for
+// no functional benefit.) If AUTH_JWT_PRIVATE_KEY/PUBLIC_KEY aren't configured, an
+// ephemeral keypair is generated once here at process startup (the same
+// "computed once at boot" pattern as dummyHashPromise above) — fine for local
+// dev/tests; every restart invalidates outstanding access tokens in that mode,
+// but refresh tokens are unaffected (they're opaque, stored separately, and
+// re-mint a freshly-signed access token on use).
+const { signingPrivateKey, signingPublicKey } =
+  env.AUTH_JWT_PRIVATE_KEY && env.AUTH_JWT_PUBLIC_KEY
+    ? { signingPrivateKey: env.AUTH_JWT_PRIVATE_KEY, signingPublicKey: env.AUTH_JWT_PUBLIC_KEY }
+    : (() => {
+        const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+        logger.warn(
+          "AUTH_JWT_PRIVATE_KEY/AUTH_JWT_PUBLIC_KEY not set — generated an ephemeral " +
+            "RSA keypair for this process. Access tokens signed before a restart " +
+            "will fail verification afterward. Set both env vars in any environment " +
+            "that must survive a restart.",
+        );
+        return {
+          signingPrivateKey: privateKey.export({ type: "pkcs8", format: "pem" }) as string,
+          signingPublicKey: publicKey.export({ type: "spki", format: "pem" }) as string,
+        };
+      })();
+
+// Small tolerance for clock drift between API instances when checking exp/nbf —
+// checklist: "small clock skew."
+const JWT_CLOCK_TOLERANCE_SECONDS = 5;
+
 @Injectable()
 export class AuthService {
   private async recordAuthEvent(
@@ -118,8 +153,18 @@ export class AuthService {
   }
 
   private signAccessToken(userId: string, sessionId: string): string {
-    return jwt.sign({ sub: userId, sid: sessionId }, env.AUTH_JWT_SECRET, {
+    return jwt.sign({ sub: userId, sid: sessionId }, signingPrivateKey, {
+      algorithm: "RS256",
+      // Carried in the JWT header; verifyAccessToken uses it to pick which public
+      // key to verify against, enabling rotation without invalidating every
+      // outstanding token signed under the previous key.
+      keyid: env.AUTH_JWT_KID,
       expiresIn: env.AUTH_ACCESS_TOKEN_TTL,
+      issuer: env.AUTH_JWT_ISSUER,
+      audience: env.AUTH_JWT_AUDIENCE,
+      // Sets an explicit `nbf` claim equal to `iat` (immediately valid) rather than
+      // leaving it unset — checklist: "checks... not before."
+      notBefore: 0,
     });
   }
 
@@ -477,9 +522,24 @@ export class AuthService {
     }
 
     if (session.revokedAt) {
-      // This refresh token was already rotated (or explicitly revoked) — presenting it
-      // again means it was either replayed from a stolen copy, or a client retried a
-      // request after a race. Treat it as compromise: revoke the entire session family.
+      const withinGraceWindow =
+        Date.now() - session.revokedAt.getTime() <= env.AUTH_REFRESH_REUSE_GRACE_MS;
+
+      // A revoked token presented again within a short grace window after its own
+      // rotation is treated as a benign race (two tabs refreshing near-simultaneously,
+      // or a client retrying a request whose response it never saw) rather than a
+      // stolen-token replay — it's resolved to whatever session this one was rotated
+      // into, following the chain forward if that session has itself since been
+      // rotated again. Outside the grace window, the same presentation is exactly
+      // what a stolen, already-used refresh token looks like, so the entire family
+      // is revoked.
+      if (withinGraceWindow && session.rotatedToSessionId) {
+        const live = await this.followRotationChain(session.rotatedToSessionId);
+        if (live && !isExpired(live.absoluteExpiresAt)) {
+          return this.rotateAndRecord(live, ctx);
+        }
+      }
+
       await prisma.session.updateMany({
         where: { familyId: session.familyId, revokedAt: null },
         data: { revokedAt: new Date(), revokedReason: "reuse_detected" },
@@ -492,8 +552,29 @@ export class AuthService {
       throw new UnauthorizedException("Session expired or revoked. Please sign in again.");
     }
 
-    // Rotate: invalidate the old refresh token and issue a new session record in the
-    // same family, carrying the original absoluteExpiresAt forward unchanged.
+    return this.rotateAndRecord(session, ctx);
+  }
+
+  /** Follows `rotatedToSessionId` pointers to the current live (non-revoked) session
+   * in a rotation chain, capped at a few hops so a corrupted chain can't loop forever. */
+  private async followRotationChain(
+    startSessionId: string,
+  ): Promise<Awaited<ReturnType<typeof prisma.session.findUnique>> | null> {
+    let current = await prisma.session.findUnique({ where: { id: startSessionId } });
+    let hops = 0;
+    while (current?.revokedAt && current.rotatedToSessionId && hops < 5) {
+      current = await prisma.session.findUnique({ where: { id: current.rotatedToSessionId } });
+      hops++;
+    }
+    return current && !current.revokedAt ? current : null;
+  }
+
+  /** Revokes `session`, rotates it forward within the same family, and records the
+   * rotation-chain pointer on the now-revoked row (used by the grace-window check above). */
+  private async rotateAndRecord(
+    session: { id: string; userId: string; familyId: string; absoluteExpiresAt: Date },
+    ctx: RequestContext,
+  ): Promise<IssuedTokens & { userId: string }> {
     await prisma.session.update({
       where: { id: session.id },
       data: { revokedAt: new Date(), revokedReason: "rotated" },
@@ -505,6 +586,11 @@ export class AuthService {
       session.absoluteExpiresAt,
       ctx,
     );
+
+    await prisma.session.update({
+      where: { id: session.id },
+      data: { rotatedToSessionId: tokens.sessionId },
+    });
 
     return { ...tokens, userId: session.userId };
   }
@@ -564,6 +650,59 @@ export class AuthService {
     ]);
 
     await this.recordAuthEvent(record.userId, "password_reset_completed", ctx);
+  }
+
+  /** Authenticated password change (distinct from the token-based `resetPassword`
+   * above): requires the current password, then revokes every OTHER session —
+   * checklist "Password change revokes other sessions" — while leaving the
+   * session making this call itself alive, since the caller is demonstrably still
+   * in control of the account right now. */
+  async changePassword(
+    userId: string,
+    currentSessionId: string,
+    input: ChangePasswordInput,
+    ctx: RequestContext,
+  ): Promise<void> {
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    // No password hash means this account only ever authenticated via OAuth/OTP/
+    // magic-link — there is no "current password" to check against, so this
+    // endpoint (by design) can't be used to set one; a future OAuth-account
+    // password-creation flow would be a distinct, deliberate feature, not a
+    // fallback inside this check.
+    const valid = user.passwordHash
+      ? await verifyPassword(user.passwordHash, input.currentPassword)
+      : false;
+    if (!valid) {
+      await this.recordAuthEvent(userId, "password_change_failed", ctx);
+      throw new UnauthorizedException("Current password is incorrect.");
+    }
+
+    if (env.FEATURE_BREACHED_PASSWORD_CHECK && (await isPasswordBreached(input.newPassword))) {
+      throw new BadRequestException(
+        "This password has appeared in a known data breach. Please choose a different one.",
+      );
+    }
+
+    const passwordHash = await hashPassword(input.newPassword);
+    await prisma.$transaction([
+      prisma.user.update({ where: { id: userId }, data: { passwordHash } }),
+      prisma.session.updateMany({
+        where: { userId, revokedAt: null, id: { not: currentSessionId } },
+        data: { revokedAt: new Date(), revokedReason: "password_changed" },
+      }),
+    ]);
+
+    await this.recordAuthEvent(userId, "password_changed", ctx);
+  }
+
+  /** Updates a session's last-activity timestamp — called on every authenticated
+   * request (SessionGuard), which is what backs idle-timeout enforcement; `lastUsedAt`
+   * would otherwise only ever reflect the session's creation time. */
+  async touchSessionActivity(sessionId: string): Promise<void> {
+    await prisma.session.updateMany({
+      where: { id: sessionId, revokedAt: null },
+      data: { lastUsedAt: new Date() },
+    });
   }
 
   async requestOtp(input: RequestOtpInput, ctx: RequestContext): Promise<void> {
@@ -756,6 +895,17 @@ export class AuthService {
     await this.recordAuthEvent(userId, "sessions_revoked_all_others", ctx);
   }
 
+  /** "Log out of all devices" (checklist item 6) — unlike `revokeOtherSessions`,
+   * this also revokes the CALLING session, since the intent here is explicitly to
+   * end every session including this one, not to keep the current one alive. */
+  async logoutAllDevices(userId: string, ctx: RequestContext): Promise<void> {
+    await prisma.session.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date(), revokedReason: "logout_all_devices" },
+    });
+    await this.recordAuthEvent(userId, "logout_all_devices", ctx);
+  }
+
   /**
    * Soft-deletes an account: sets deletedAt + status=deleted, revokes every session.
    * Email is not released for reuse by this operation — the row (and its unique email
@@ -777,8 +927,38 @@ export class AuthService {
   }
 
   verifyAccessToken(token: string): { userId: string; sessionId: string } {
+    // Read the header first (unverified) only to pick which public key to verify
+    // against — the signature itself is still checked below, so a forged/garbage
+    // header just fails to match a known kid and falls through to the generic
+    // rejection, never short-circuiting trust.
+    let kid: string | undefined;
     try {
-      const payload = jwt.verify(token, env.AUTH_JWT_SECRET) as { sub: string; sid: string };
+      const decoded = jwt.decode(token, { complete: true });
+      kid = typeof decoded?.header.kid === "string" ? decoded.header.kid : undefined;
+    } catch {
+      throw new UnauthorizedException("Invalid or expired session.");
+    }
+
+    const publicKey =
+      kid === env.AUTH_JWT_KID
+        ? signingPublicKey
+        : kid && kid === env.AUTH_JWT_PREVIOUS_KID && env.AUTH_JWT_PREVIOUS_PUBLIC_KEY
+          ? env.AUTH_JWT_PREVIOUS_PUBLIC_KEY
+          : null;
+    if (!publicKey) {
+      throw new UnauthorizedException("Invalid or expired session.");
+    }
+
+    try {
+      const payload = jwt.verify(token, publicKey, {
+        // Explicit allowlist — jwt.verify never falls back to "none" or another
+        // algorithm when this is set, regardless of what the token's own header
+        // claims (checklist: "allowlists the algorithm, reject none").
+        algorithms: ["RS256"],
+        issuer: env.AUTH_JWT_ISSUER,
+        audience: env.AUTH_JWT_AUDIENCE,
+        clockTolerance: JWT_CLOCK_TOLERANCE_SECONDS,
+      }) as { sub: string; sid: string };
       return { userId: payload.sub, sessionId: payload.sid };
     } catch {
       throw new UnauthorizedException("Invalid or expired session.");

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildContentSecurityPolicy,
   buildSecurityHeaders,
+  cookieName,
   generateNonce,
   isOriginAllowed,
+  sessionCookieOptions,
 } from "./index";
 
 describe("buildContentSecurityPolicy", () => {
@@ -64,5 +66,43 @@ describe("isOriginAllowed", () => {
 
   it("rejects a non-allowlisted origin", () => {
     expect(isOriginAllowed("https://evil.com", ["https://example.com"])).toBe(false);
+  });
+});
+
+describe("cookieName (Phase 7 checklist: __Host- prefix)", () => {
+  it("applies the __Host- prefix when secure and no domain is set", () => {
+    expect(cookieName("app_session", { secure: true })).toBe("__Host-app_session");
+  });
+
+  it("does not apply the prefix when not secure (e.g. local dev over HTTP)", () => {
+    expect(cookieName("app_session", { secure: false })).toBe("app_session");
+  });
+
+  it("does not apply the prefix when a Domain attribute is set", () => {
+    expect(cookieName("app_session", { secure: true, domain: "example.com" })).toBe("app_session");
+  });
+});
+
+describe("sessionCookieOptions (Phase 7 checklist: cookie configuration)", () => {
+  it("always sets httpOnly, Path=/, and defaults to SameSite=Lax", () => {
+    const opts = sessionCookieOptions({ secure: true, maxAgeSeconds: 60 });
+    expect(opts.httpOnly).toBe(true);
+    expect(opts.path).toBe("/");
+    expect(opts.sameSite).toBe("lax");
+  });
+
+  it("supports SameSite=Strict for cookies that never need a cross-site send", () => {
+    const opts = sessionCookieOptions({ secure: true, maxAgeSeconds: 60, sameSite: "strict" });
+    expect(opts.sameSite).toBe("strict");
+  });
+
+  it("omits the Domain attribute entirely when unset, rather than sending an empty one", () => {
+    const opts = sessionCookieOptions({ secure: true, maxAgeSeconds: 60 });
+    expect("domain" in opts).toBe(false);
+  });
+
+  it("includes the Domain attribute when one is explicitly given", () => {
+    const opts = sessionCookieOptions({ secure: true, maxAgeSeconds: 60, domain: "example.com" });
+    expect(opts.domain).toBe("example.com");
   });
 });

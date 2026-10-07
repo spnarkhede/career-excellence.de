@@ -524,3 +524,146 @@ pnpm test && pnpm db:check-consistency` against a real, disposable Postgres data
   `Promise.allSettled`, structured to skip cleanly via `isDatabaseReachable()` since no
   live database is available in this session; status is Requires manual verification,
   not Confirmed working, per AUTH_RULES.md rule 13.
+
+### BUG-010: Log-redaction key matching used exact-match, silently letting `accessToken`/`refreshToken`/`csrfToken` bypass redaction
+
+- **Label:** Confirmed bug
+- **Severity:** MEDIUM — the redaction list already covered the literal words
+  `token`/`refresh`/`secret`/etc., so the intent was clearly to catch exactly these
+  field names; the compound names an actual session-token field would realistically
+  be called (`accessToken`, `refreshToken`) were the ones that slipped through,
+  which is the worst case for a redaction allowlist — it fails exactly where it
+  matters most, silently, with no error or warning.
+- **Status:** Fixed
+- **Component/file:** `packages/observability/src/redact.ts`, function `deepRedact`
+- **Exact location:** The matching check `SENSITIVE_KEYS.has(normalizeKey(key))` —
+  an exact-equality lookup against a `Set` of single words.
+- **Problem:** `normalizeKey("accessToken")` produces `"accesstoken"`, and
+  `normalizeKey("refreshToken")` produces `"refreshtoken"` — neither equals the
+  literal strings `"token"` or `"refresh"` already in `SENSITIVE_KEYS`, so neither
+  key was ever redacted, despite the redaction list's own stated intent ("token,"
+  "refresh") obviously being written with exactly these kinds of fields in mind.
+- **Root cause:** The original design matched on exact normalized key equality,
+  which works for a field literally named `token` but not for any compound name
+  built around that word — a single-word allowlist checked by `===` can never catch
+  a two-word compound unless every compound is listed individually, which doesn't
+  scale and wasn't attempted.
+- **Trigger:** Any `logger.error`/`logger.info`/etc. call anywhere in the codebase
+  that logs an object with a key literally named `accessToken`, `refreshToken`, or
+  similarly compound-around-a-sensitive-word name — none currently exist in
+  `auth.service.ts`'s own logging calls (verified: it logs `err`/`requestId`/
+  `userId` only), so this was a **latent** gap, not one with a known live
+  exploitation path in the current codebase, but exactly the kind of gap a future
+  change (e.g. a debug log added during incident response) could trip over
+  silently.
+- **Impact:** If ever triggered, a token value would appear in plaintext in
+  structured logs — a direct violation of AUTH_RULES rule 4.
+- **Reproduction steps:** 1) Call `deepRedact({ accessToken: "secret-value" })`
+  (prior to the fix). 2) Observe the result's `accessToken` field is the raw
+  value, not `[redacted]`.
+- **Expected behavior:** Any key whose normalized form contains a listed sensitive
+  keyword is redacted, regardless of what else is concatenated onto it.
+- **Actual behavior:** Only an exact match was redacted, prior to this fix.
+- **Why it happens:** See root cause.
+- **Related components:** None — isolated to `deepRedact`'s own matching logic;
+  every call site (the pino logger's `deepRedact` hook, and any direct caller)
+  benefits from the fix with no change needed on their end.
+- **Recommended fix (applied):** Replaced the exact-match `Set.has` check with
+  `isSensitiveKey()`, which checks whether the normalized key **contains** any
+  listed keyword as a substring, not just equals one.
+- **Regression risk:** Low — strictly widens what gets redacted; the existing
+  "leaves non-sensitive values untouched" test (`id`, `status`, `count`) still
+  passes unchanged, confirming no innocuous field name accidentally contains one
+  of the 10 keywords.
+- **How to test the fix:** `packages/observability/src/redact.spec.ts`'s new
+  "redacts compound key names built around a sensitive word (BUG-010)" test —
+  actually run, no database needed.
+
+### BUG-011: `SessionGuard` read the session cookie name from `process.env` directly, bypassing the validated/defaulted config
+
+- **Label:** Confirmed bug
+- **Severity:** LOW — the default value happened to match (`"app_session"` either
+  way), so this had no observable effect before Phase 7; it became a real problem
+  only once Phase 7 introduced the `__Host-` prefix, which is computed from several
+  env inputs together (`AUTH_SESSION_COOKIE_NAME` + `secure` + `domain`) in
+  `cookie-names.ts` — `SessionGuard`'s direct `process.env` read had no way to
+  apply that same computed prefix, so it would have looked for the wrong cookie
+  name entirely as soon as the prefix applied (any non-local environment).
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/session.guard.ts`, method `canActivate`
+- **Exact location:** `const cookieName = process.env.AUTH_SESSION_COOKIE_NAME ?? "app_session";`
+- **Problem:** Every other cookie-name read in the codebase (the controller's
+  `setSessionCookies`/`clearSessionCookies`/`resolveExistingSessionId`) went
+  through `loadPrivateEnv()`'s validated, defaulted config; this one call site
+  read straight from `process.env`, skipping validation and, after this phase,
+  skipping the `__Host-` prefix computation entirely.
+- **Root cause:** Written before the controller's own helper functions existed in
+  their current form; never revisited to match once the pattern was established
+  elsewhere.
+- **Trigger:** Any environment where `AUTH_SESSION_COOKIE_NAME` differs from its
+  default, OR (after this phase) any non-local environment where the `__Host-`
+  prefix applies — in either case this guard would never find the cookie the
+  controller actually set, rejecting every authenticated request with "Authentication
+  required."
+- **Impact:** Complete, silent lockout of every user in any environment where the
+  computed cookie name differs from the literal `process.env.AUTH_SESSION_COOKIE_NAME`
+  value (or its hardcoded fallback) — caught during this phase's own implementation
+  work, before being exercised against a real deployment.
+- **Reproduction steps:** 1) Deploy with `APP_ENV` set to something other than
+  `"local"` (so `isSecureCookies` is true) and no `API_COOKIE_DOMAIN` set (so the
+  `__Host-` prefix applies). 2) Log in successfully (cookie is set as
+  `__Host-app_session`). 3) Call any `SessionGuard`-protected route. 4) Prior to the
+  fix, observe a 401 even with a valid, unexpired session — the guard was looking
+  for a cookie named `app_session`, which was never set.
+- **Expected behavior:** The guard finds the cookie under whatever name the
+  controller actually used to set it.
+- **Actual behavior:** Lockout, prior to this fix.
+- **Why it happens:** See root cause.
+- **Related components:** `apps/api/src/auth/cookie-names.ts` (new in this phase) —
+  now the single source of truth every cookie-reading/writing call site uses.
+- **Recommended fix (applied):** Replaced the direct `process.env` read with the
+  shared `sessionCookieName` export from `cookie-names.ts`.
+- **Regression risk:** Low — this makes the guard agree with the controller, which
+  is strictly more correct; the only behavior change is fixing the
+  previously-latent mismatch.
+- **How to test the fix:** No dedicated automated test (would need a running HTTP
+  server + a non-local `APP_ENV` to exercise the `__Host-` prefix path) — Requires
+  manual verification; covered implicitly by any `SessionGuard`-protected
+  integration test passing with the shared cookie name once a real server is
+  stood up.
+
+### Potential risk: idle-timeout enforcement is scoped to protected-resource access, not to every authenticated request including `/auth/refresh`
+
+- **Label:** Potential risk
+- **Severity:** LOW — this is a documented design choice, not a defect; flagging it
+  because a stricter reading of "idle timeout... enforced on the server" is
+  plausible and a future phase or reviewer might expect it.
+- **Status:** Requires manual verification (this is a design decision to confirm
+  with the human, not a bug to fix)
+- **Component/file:** `apps/api/src/auth/session.guard.ts` (touches/checks
+  `lastUsedAt`) vs. `apps/api/src/auth/auth.service.ts` `refresh()` (does not)
+- **Problem:** `SessionGuard` updates and checks `lastUsedAt` on every
+  protected-route request, but `refresh()` does neither — a client that only ever
+  calls `POST /auth/refresh` on a timer, without ever calling a protected route,
+  keeps its refresh-token chain alive indefinitely without ever tripping the idle
+  timeout, because nothing about that activity pattern ever touches `lastUsedAt`.
+- **Root cause:** "Idle" was interpreted as "unused for its actual purpose"
+  (accessing protected resources), not "the client process is still alive and
+  calling the API at all." Both are defensible readings of the task's wording.
+- **Trigger:** A client (malicious or just a buggy keep-alive loop) that calls
+  `/auth/refresh` on an interval shorter than `AUTH_REFRESH_TOKEN_TTL` without ever
+  calling anything else.
+- **Impact:** A session could remain refreshable indefinitely despite the user
+  never actually using the application, which is the scenario idle-timeout exists
+  to prevent.
+- **Reproduction steps:** 1) Log in. 2) Script a loop that calls `POST
+/auth/refresh` every `AUTH_IDLE_TIMEOUT_SECONDS / 2` seconds, never calling any
+  other endpoint. 3) Observe the session never gets idle-timed-out.
+- **Expected behavior:** Depends on the intended semantics — not yet confirmed with
+  the human.
+- **Recommended fix (if the stricter reading is wanted):** Have `refresh()` also
+  check and update `lastUsedAt` (or a separate `lastRefreshedAt`), rejecting a
+  refresh whose session has been idle (by that measure) too long.
+- **Regression risk:** N/A — no fix has been applied; this is flagged for a future
+  decision.
+- **How to test:** N/A until a decision is made on which semantics are intended.

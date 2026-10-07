@@ -75,18 +75,47 @@ export function isAllowedRedirect(target: string, allowedOrigins: string[]): boo
 }
 
 export interface CookieOptions {
-  domain: string;
+  /** Empty/omitted means "no Domain attribute" — a host-only cookie. */
+  domain?: string;
   secure: boolean;
   maxAgeSeconds: number;
+  /**
+   * "strict" for cookies that should never be sent on an incoming cross-site
+   * navigation (e.g. a refresh token, which is only ever read by same-site
+   * fetches); "lax" (the default) for ones that must still work after following a
+   * same-site-but-top-level-navigation link from elsewhere (e.g. an email
+   * magic-link landing page's own subsequent fetches).
+   */
+  sameSite?: "strict" | "lax";
 }
 
-export function sessionCookieOptions({ domain, secure, maxAgeSeconds }: CookieOptions) {
+export function sessionCookieOptions({
+  domain,
+  secure,
+  maxAgeSeconds,
+  sameSite = "lax",
+}: CookieOptions) {
   return {
     httpOnly: true,
     secure,
-    sameSite: "lax" as const,
-    domain,
+    sameSite,
+    // Omit the Domain attribute entirely when unset, rather than passing an empty
+    // string — Express's res.cookie would otherwise serialize `Domain=`, which is
+    // not the same as omitting the attribute.
+    ...(domain ? { domain } : {}),
     path: "/",
     maxAge: maxAgeSeconds * 1000,
   };
+}
+
+/**
+ * The `__Host-` prefix is a browser-enforced guarantee (RFC 6265bis) that a cookie
+ * can only be set when `Secure` is true, `Path=/`, and no `Domain` attribute is
+ * present — exactly the "most locked down" cookie shape. Applying it is only valid
+ * when all three hold; this computes the eligible name so the caller can't apply
+ * the prefix to a cookie that doesn't actually meet the requirement (the browser
+ * would silently reject the Set-Cookie header instead of erroring visibly).
+ */
+export function cookieName(baseName: string, opts: { secure: boolean; domain?: string }): string {
+  return opts.secure && !opts.domain ? `__Host-${baseName}` : baseName;
 }

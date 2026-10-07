@@ -47,4 +47,15 @@ describe("deepRedact", () => {
     const input = { id: "123", status: "active", count: 4 };
     expect(deepRedact(input)).toEqual(input);
   });
+
+  it("redacts compound key names built around a sensitive word (BUG-010)", () => {
+    // accessToken/refreshToken normalize to accesstoken/refreshtoken, which never
+    // equaled the literal words token/refresh under the old exact-match check —
+    // see docs/auth/FINDINGS.md BUG-010.
+    const input = { accessToken: "a.b.c", refreshToken: "r", csrfToken: "x" };
+    const result = deepRedact(input) as Record<string, string>;
+    expect(result.accessToken).toBe("[redacted]");
+    expect(result.refreshToken).toBe("[redacted]");
+    expect(result.csrfToken).toBe("[redacted]");
+  });
 });

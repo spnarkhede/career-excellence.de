@@ -1,5 +1,6 @@
 import { createZodDto } from "./zod-dto.js";
 import {
+  changePasswordSchema,
   loginSchema,
   requestMagicLinkSchema,
   requestOtpSchema,
@@ -22,3 +23,4 @@ export class RequestOtpDto extends createZodDto(requestOtpSchema) {}
 export class VerifyOtpDto extends createZodDto(verifyOtpSchema) {}
 export class RequestMagicLinkDto extends createZodDto(requestMagicLinkSchema) {}
 export class VerifyMagicLinkDto extends createZodDto(verifyMagicLinkSchema) {}
+export class ChangePasswordDto extends createZodDto(changePasswordSchema) {}

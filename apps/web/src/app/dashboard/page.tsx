@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import type { MeResponse } from "@saas/contracts";
+import { DashboardActions } from "./dashboard-actions";
 import { DashboardError } from "./dashboard-error";
 
 /**
@@ -60,6 +61,9 @@ export default async function DashboardPage() {
     <main className="mx-auto max-w-2xl px-6 py-12">
       <h1 className="text-2xl font-semibold">Welcome, {principal.user.email}</h1>
       <p className="text-muted-foreground">Roles: {principal.roles.join(", ") || "none"}</p>
+      <div className="mt-6">
+        <DashboardActions />
+      </div>
     </main>
   );
 }

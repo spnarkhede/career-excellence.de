@@ -83,6 +83,11 @@ export const verifyMagicLinkSchema = z.object({
   token: z.string().min(1),
 });
 
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: passwordSchema,
+});
+
 export const updateProfileSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
 });
@@ -103,5 +108,6 @@ export type RequestOtpInput = z.infer<typeof requestOtpSchema>;
 export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>;
 export type RequestMagicLinkInput = z.infer<typeof requestMagicLinkSchema>;
 export type VerifyMagicLinkInput = z.infer<typeof verifyMagicLinkSchema>;
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 export type CookiePreferencesInput = z.infer<typeof cookiePreferencesSchema>;

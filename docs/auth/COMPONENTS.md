@@ -704,6 +704,195 @@ true)` (transaction-scoped).
 8. No inconsistent-state risk — a `submitLock` ref guards both the request and
    verify handlers against a double-submit race, same pattern as `LoginForm`.
 
+### `AuthService.signAccessToken` / `verifyAccessToken` — asymmetric RS256, kid rotation, iss/aud/nbf (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Access tokens are now signed with RS256 (asymmetric) instead of the Phase
+   3-6 shared-secret HS256 — a leaked PUBLIC key can't be used to forge tokens.
+   Carries a `kid` header; verification picks the matching public key (current
+   or previous), rejects any algorithm but RS256 (including `alg: none`), and
+   checks `iss`/`aud`/`exp`/`nbf` with a 5-second clock-skew tolerance. If
+   `AUTH_JWT_PRIVATE_KEY`/`PUBLIC_KEY` aren't configured, an ephemeral RSA
+   keypair is generated once at process startup (same pattern as
+   `dummyHashPromise`).
+2. Called by every session-issuing method (`login`, `verifyOtp`,
+   `verifyMagicLink`, `refresh`) and by `SessionGuard`/
+   `AuthController.resolveExistingSessionId` (verify).
+3. Calls `jsonwebtoken`'s `sign`/`verify`/`decode`.
+4. Receives a userId+sessionId pair (sign) or a raw token string (verify).
+5. Returns a signed JWT string, or `{ userId, sessionId }`; throws
+   `UnauthorizedException("Invalid or expired session.")` on any verification
+   failure — malformed, wrong algorithm, wrong key, wrong issuer/audience,
+   expired, not-yet-valid, all collapse to the same message.
+6. On failure: never reveals which specific check failed — this is the literal
+   "allowlists the algorithm, reject none" + "checks issuer, audience, expiry
+   and not before" checklist requirement.
+7. Secure: the private key never leaves this module; the public key is safe to
+   expose (used only to verify, never to sign).
+8. **Deliberate deviation from the task's literal wording**: EdDSA was the
+   spec's first-listed algorithm, but `@types/jsonwebtoken@9.0.10`'s `Algorithm`
+   type doesn't include `"EdDSA"` yet (even though the underlying library and
+   Node both support it) — RS256, the spec's explicitly-allowed alternative,
+   avoids fighting the type definitions for no functional benefit. See
+   FINDINGS.md.
+
+### `AuthService.refresh` / `rotateAndRecord` / `followRotationChain` — reuse-grace window (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Rotation (already correct from Phase 5/6) is now paired with a short grace
+   window: presenting an already-rotated token within
+   `AUTH_REFRESH_REUSE_GRACE_MS` (default 10s) resolves to the live session at
+   the end of the rotation chain instead of being treated as a stolen-token
+   replay — handles the benign case of two tabs refreshing near-simultaneously,
+   or a client retrying a request whose response it never saw. Outside the
+   grace window, the same presentation still revokes the entire family exactly
+   as before.
+2. Called by `AuthController.refresh` (`POST /auth/refresh`).
+3. Calls `prisma.session` (find/update/create), `rotateSession`.
+4. Receives a raw refresh token and a request context.
+5. Returns new `IssuedTokens`, or throws `UnauthorizedException`.
+6. On failure: identical "Session expired or revoked" message for every
+   failure mode (unknown token, revoked-outside-grace, absolute-expired).
+7. Secure: never logs the raw refresh token; only its hash is ever looked up.
+8. No inconsistent-state risk: the rotation-chain pointer (`rotatedToSessionId`)
+   is written after the new session is created, so a crash between the two
+   leaves the chain one hop short rather than pointing at a nonexistent row —
+   `followRotationChain` treats a missing/already-revoked-with-no-further-
+   pointer session as "not live," falling through to the stolen-token path,
+   which is the safe default on ambiguity.
+
+### `AuthService.changePassword` / `logoutAllDevices` — new in Phase 7 (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. `changePassword` requires the current password, then revokes every OTHER
+   session (checklist "Password change revokes other sessions") while leaving
+   the calling session alive. `logoutAllDevices` revokes every session
+   including the calling one (checklist "Log out of all devices").
+2. Called by `AuthController.changePassword`/`logoutAllDevices`
+   (`POST /auth/change-password`, `POST /auth/logout-all-devices`), both behind
+   `SessionGuard` + `CsrfGuard`.
+3. Calls `verifyPassword`, `hashPassword`, `isPasswordBreached`,
+   `prisma.session.updateMany`.
+4. Receives userId, the calling sessionId, and (for changePassword) the
+   current+new password.
+5. Returns `void`; `changePassword` throws `UnauthorizedException` on a wrong
+   current password.
+6. On failure: a wrong current password never reveals anything about the new
+   password's validity, or vice versa — checked in that order deliberately.
+7. Secure: an account with no password hash (OAuth-only) can never pass the
+   current-password check — there is no fallback path that would let this
+   endpoint silently create a password for such an account.
+8. No inconsistent-state risk — a single transaction covers the password
+   update and the other-session revocation together.
+
+### `CsrfGuard` — double-submit CSRF + Origin check (`apps/api/src/common/csrf.guard.ts`) — Implemented
+
+1. New guard applied to every cookie-authenticated state-changing route
+   (`logout`, `logout-all-devices`, `refresh`, session revoke/revoke-others,
+   `change-password`): on POST/PUT/PATCH/DELETE, re-checks the `Origin` header
+   against the CORS allowlist (defense-in-depth beyond browser-enforced CORS)
+   and requires a `X-CSRF-Token` header matching the `csrf_token`/
+   `__Host-csrf_token` cookie (double-submit pattern), compared in constant
+   time.
+2. Called via `@UseGuards(..., CsrfGuard)` on the routes above.
+3. Calls nothing external — pure request inspection.
+4. Receives the `Request` (method, Origin header, cookies, X-CSRF-Token header).
+5. Returns `true`, or throws `ForbiddenException`.
+6. On failure: a missing/mismatched token or disallowed Origin is rejected
+   identically — no information about which check failed.
+7. Secure: this is the literal "CSRF token plus Origin check on every cookie
+   authenticated state change" checklist requirement. The CSRF cookie is
+   deliberately NOT HttpOnly (the client must be able to read and echo it) —
+   safe under the double-submit pattern because an attacker's cross-site page
+   can make the browser SEND the cookie but can't READ its value.
+8. No inconsistent-state risk — stateless, per-request check.
+
+### `SessionGuard` — idle-timeout + absolute-expiry enforcement, Cache-Control (`apps/api/src/auth/session.guard.ts`) — Implemented
+
+1. Now also rejects a session past its `absoluteExpiresAt` (previously checked
+   only in `refresh()`, not here) and past `AUTH_IDLE_TIMEOUT_SECONDS` of
+   inactivity (`lastUsedAt`, which this guard now updates on every successful
+   check — previously it was only ever set at session creation, never touched
+   again). Also sets `Cache-Control: no-store` on every authenticated
+   response. Fixed to read the cookie name via the shared, env-driven
+   `cookie-names.ts` instead of reading `process.env` directly (BUG-011; see
+   FINDINGS.md).
+2. Called by every `@UseGuards(SessionGuard)` route.
+3. Calls `AuthService.verifyAccessToken`/`touchSessionActivity`,
+   `PrincipalService.resolve`, `prisma.session.findUnique`.
+4. Receives the request's session cookie.
+5. Returns `true` (attaches `request.principal`), or throws
+   `UnauthorizedException`.
+6. On failure: revoked, absolute-expired, and idle-timed-out sessions all get
+   the same rejection — no distinguishable response.
+7. Secure: idle timeout is enforced server-side against the database row, not
+   trusted from any client-supplied timestamp.
+8. **Design note (not a bug)**: idleness is measured by activity against
+   _protected resources_ (anything behind `SessionGuard`), not by `refresh()`
+   calls — a client that only ever calls `/auth/refresh` without ever hitting a
+   protected route could keep a session's refresh-token chain alive indefinitely
+   without ever touching `lastUsedAt`. This is a deliberate interpretation
+   (idle = unused for its actual purpose), flagged as a potential risk in
+   FINDINGS.md for a future phase to revisit if a stricter reading is wanted.
+
+### `createApiClient` refresh-and-retry, CSRF header, cross-tab logout (`packages/api-client/src/index.ts`) — Implemented
+
+1. Adds single-flight refresh-and-retry-once on a 401 (one shared in-flight
+   promise per client instance — checklist "5 parallel requests... exactly one
+   refresh"), automatic `X-CSRF-Token` header attachment on state-changing
+   requests (reads the double-submit cookie), and `broadcastLogout`/
+   `onLogoutBroadcast` (BroadcastChannel, with a `localStorage`-ping fallback
+   for browsers that block it).
+2. Called by every page using `apiClient` in apps/web and apps/admin.
+3. Calls `fetch` (including `POST /auth/refresh`), `BroadcastChannel`/
+   `localStorage`/`addEventListener` (structurally, via `globalThis` casts —
+   this package has no DOM lib).
+4. Receives the same inputs as before, plus an internal `__isRetry` flag.
+5. Returns the parsed response, or throws one of the existing typed errors.
+6. On failure: a failed refresh still calls `onUnauthorized` exactly once,
+   same as before this change — the new retry path only adds a SUCCESS case
+   that previously didn't exist.
+7. Secure: the CSRF token is read from a cookie, never a JS-accessible token
+   store; `broadcastLogout`'s fallback never writes anything sensitive to
+   `localStorage` (only a timestamp ping).
+8. No inconsistent-state risk — the shared refresh promise is cleared the
+   moment it settles, so a later, unrelated 401 starts a fresh attempt.
+
+### Session management UI (`apps/web/src/app/dashboard/{sessions/*,dashboard-actions}.tsx`) — Implemented
+
+1. New `/dashboard/sessions` page lists every active session (device/browser,
+   last-active time, a "this device" marker) with a per-row Revoke button and
+   a "Log out other devices" button — checklist task 7. A new logout button on
+   the dashboard itself calls `/auth/logout`, broadcasts the logout to other
+   tabs, then redirects; the dashboard also subscribes to logout broadcasts
+   from OTHER tabs and redirects itself when one arrives.
+2. Rendered by `apps/web/src/app/dashboard/{page,sessions/page}.tsx`.
+3. Calls `GET /auth/sessions`, `DELETE /auth/sessions/:id`,
+   `POST /auth/sessions/revoke-others`, `POST /auth/logout`,
+   `broadcastLogout`/`onLogoutBroadcast`.
+4. Receives no route params beyond navigation.
+5. Returns rendered UI; revoking refreshes the list; logging out navigates to
+   `/login`.
+6. On failure: a failed list/revoke/logout shows an inline error message, never
+   a blank page or an uncaught exception.
+7. Secure: never renders `refreshTokenHash` or any field the controller
+   doesn't already strip server-side (see the controller change below).
+8. No inconsistent-state risk — purely client-side rendering logic.
+
+### `AuthController.listSessions` response shaping (`apps/api/src/auth/auth.controller.ts`) — Implemented
+
+1. `GET /auth/sessions` now maps each row to `{ id, current, userAgent,
+createdAt, lastUsedAt, expiresAt }` instead of returning
+   `AuthService.listSessions`'s raw Prisma rows, which included
+   `refreshTokenHash`, `ipHash`, and the new `rotatedToSessionId` — none of
+   which a frontend session-list view should ever receive, even hashed.
+2. Called by the new sessions page above.
+3. Calls `AuthService.listSessions`.
+4. Receives the resolved principal (for the `current` flag).
+5. Returns the shaped array described above.
+6. On failure: n/a — pure read, no state change.
+7. Secure: this is the literal "never expose... in... responses" spirit of
+   AUTH_RULES rule 4, applied to a hashed-but-still-unnecessary-to-expose field,
+   not just raw secrets.
+8. No inconsistent-state risk.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

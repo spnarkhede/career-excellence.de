@@ -140,9 +140,19 @@ model Session {
   absoluteExpiresAt DateTime
 
   createdAt     DateTime  @default(now())
+  // Updated on every authenticated request (SessionGuard), not just at creation —
+  // backs idle-timeout enforcement, which is distinct from the rolling/absolute
+  // refresh-token expiry above.
   lastUsedAt    DateTime  @default(now())
   revokedAt     DateTime?
   revokedReason String?
+
+  // Set when this (now-revoked) session was rotated into a successor. Lets a
+  // refresh retried within a short grace window after rotation (e.g. two tabs
+  // racing, or a client retrying a timed-out-but-actually-successful request) be
+  // treated as benign and resolved to the live session, instead of being treated
+  // as a stolen-token replay that revokes the whole family.
+  rotatedToSessionId String?
 
   userAgent String?
   // Hashed, never raw — sessions must never store a reversible client IP.

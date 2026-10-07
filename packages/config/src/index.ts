@@ -22,11 +22,42 @@ export const privateEnvSchema = z.object({
   REDIS_URL: z.string().min(1, "REDIS_URL is required"),
 
   AUTH_PROVIDER: z.string().default("stub"),
+  // Retained for backward compatibility with existing config/tests; no longer used
+  // to sign access tokens (see AUTH_JWT_PRIVATE_KEY/PUBLIC_KEY below — Phase 7
+  // switched signing from HS256/this shared secret to asymmetric EdDSA).
   AUTH_JWT_SECRET: z.string().min(32, "AUTH_JWT_SECRET must be at least 32 characters"),
+  // Asymmetric (EdDSA/Ed25519) access-token signing keys, PEM-encoded. Optional: if
+  // either is unset, AuthService generates an ephemeral Ed25519 keypair once at
+  // process startup (same pattern as the dummy-hash timing protection) — fine for
+  // local dev/tests, but means every restart invalidates outstanding access tokens
+  // (refresh tokens are unaffected, since they're opaque and stored separately).
+  // Production should set both so signing survives a restart/redeploy.
+  AUTH_JWT_PRIVATE_KEY: z.string().optional().default(""),
+  AUTH_JWT_PUBLIC_KEY: z.string().optional().default(""),
+  // Key ID carried in the JWT header, letting `verifyAccessToken` pick the right
+  // public key — required for key rotation (checklist item 2's "key IDs for
+  // rotation"): roll by setting AUTH_JWT_PREVIOUS_* to the outgoing key/kid and
+  // AUTH_JWT_PRIVATE_KEY/PUBLIC_KEY/KID to the incoming one; tokens signed under the
+  // previous key remain verifiable until they naturally expire.
+  AUTH_JWT_KID: z.string().default("default"),
+  AUTH_JWT_PREVIOUS_PUBLIC_KEY: z.string().optional().default(""),
+  AUTH_JWT_PREVIOUS_KID: z.string().optional().default(""),
+  AUTH_JWT_ISSUER: z.string().default("career-excellence-api"),
+  AUTH_JWT_AUDIENCE: z.string().default("career-excellence-web"),
   AUTH_ACCESS_TOKEN_TTL: z.coerce.number().int().positive().default(900),
   AUTH_REFRESH_TOKEN_TTL: z.coerce.number().int().positive().default(2_592_000),
+  // Idle timeout (checklist "idle timeout... enforced on the server"): a session
+  // not used for this long is treated as expired even though its refresh token
+  // hasn't reached its own rolling/absolute expiry.
+  AUTH_IDLE_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(1800),
+  // Grace window after a refresh token is rotated during which presenting the
+  // now-superseded token is treated as a benign race (e.g. two tabs refreshing at
+  // once) and resolved to the live session, rather than as a stolen-token replay
+  // that revokes the whole family.
+  AUTH_REFRESH_REUSE_GRACE_MS: z.coerce.number().int().nonnegative().default(10_000),
   AUTH_SESSION_COOKIE_NAME: z.string().default("app_session"),
   AUTH_REFRESH_COOKIE_NAME: z.string().default("app_refresh"),
+  AUTH_CSRF_COOKIE_NAME: z.string().default("csrf_token"),
   // Checks new/changed passwords against the HIBP k-anonymity range API (never sends
   // the plaintext password or full hash — see @saas/security/server isPasswordBreached).
   // Off by default: an external dependency on the signup/reset path should be an
@@ -34,7 +65,11 @@ export const privateEnvSchema = z.object({
   FEATURE_BREACHED_PASSWORD_CHECK: z.coerce.boolean().default(false),
 
   API_PORT: z.coerce.number().int().positive().default(4000),
-  API_COOKIE_DOMAIN: z.string().default("localhost"),
+  // Empty (the default) means "don't set a Domain attribute at all" — a host-only
+  // cookie, which only this exact host ever receives (checklist "Domain unset
+  // unless subdomains need it"). Set only when the API and its clients genuinely
+  // span subdomains of one parent domain.
+  API_COOKIE_DOMAIN: z.string().default(""),
   API_CORS_ALLOWED_ORIGINS: z.string().default(""),
 
   GOOGLE_OAUTH_CLIENT_ID: z.string().optional().default(""),

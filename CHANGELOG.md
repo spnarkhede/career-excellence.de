@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-07
+
+### Added
+
+- Access tokens re-signed with asymmetric RS256 (replacing the shared-secret
+  HS256 used since Phase 3), with a `kid` header enabling key rotation
+  (`AUTH_JWT_PRIVATE_KEY`/`PUBLIC_KEY`/`KID`, plus `AUTH_JWT_PREVIOUS_*` for a
+  rotation grace period), an explicit algorithm allowlist (rejects `alg: none`
+  and anything else), and `iss`/`aud`/`exp`/`nbf` checks with a 5-second clock
+  skew tolerance.
+- Refresh-token reuse grace window (`AUTH_REFRESH_REUSE_GRACE_MS`, default
+  10s): a rotated token replayed within the window resolves to the live
+  session (benign race) instead of revoking the whole family; outside the
+  window, the same replay still revokes the family exactly as before.
+- Idle-timeout (`AUTH_IDLE_TIMEOUT_SECONDS`, default 30 min) and
+  absolute-expiry enforcement added to `SessionGuard`, plus
+  `Cache-Control: no-store` on every authenticated response.
+- `CsrfGuard`: double-submit-cookie CSRF token + explicit Origin re-check,
+  applied to every cookie-authenticated state-changing route (logout,
+  logout-all-devices, refresh, session revoke/revoke-others,
+  change-password).
+- Cookie hardening: `API_COOKIE_DOMAIN` now defaults to unset (host-only
+  cookies); the `__Host-` prefix is applied automatically whenever a cookie is
+  Secure with no Domain attribute; the refresh cookie now uses
+  `SameSite=Strict` (the session cookie stays `Lax`).
+- `packages/api-client`: single-flight refresh-and-retry-once on a 401 (one
+  shared in-flight promise per client instance), automatic CSRF header
+  attachment on state-changing requests, and `broadcastLogout`/
+  `onLogoutBroadcast` (BroadcastChannel with a `localStorage`-ping fallback)
+  for cross-tab logout sync.
+- New authenticated endpoints: `POST /auth/change-password` (revokes every
+  other session), `POST /auth/logout-all-devices` (revokes every session
+  including the calling one).
+- New frontend: `/dashboard/sessions` (device list with per-row revoke and
+  "log out other devices"), a logout button on the dashboard that broadcasts
+  to other tabs.
+- 23 new tests across `apps/api`, `packages/api-client`, `packages/security`,
+  and `packages/observability`, covering the Phase 7 checklist.
+
+### Fixed
+
+- **BUG-010 (medium severity)**: log redaction (`packages/observability`)
+  used exact-match key matching, silently letting `accessToken`/
+  `refreshToken`/`csrfToken` bypass redaction despite `token`/`refresh`
+  already being on the sensitive-keyword list. Switched to substring
+  matching.
+- **BUG-011 (low severity)**: `SessionGuard` read the session cookie name
+  directly from `process.env` instead of the validated config, which would
+  have caused a silent total lockout as soon as the new `__Host-` prefix
+  logic made the controller's actual cookie name diverge from the guard's
+  hardcoded fallback. Fixed by routing through a new shared
+  `cookie-names.ts`.
+
+### Notes
+
+- Same environment limitation as every prior phase: no live Postgres was
+  available, so every session-row-dependent test is written as a real
+  integration test that skips cleanly rather than being claimed as "Confirmed
+  working." Unlike prior phases, a large share of this phase's logic (JWT
+  signing/verification, cookie-name computation, the CSRF guard, the
+  api-client refresh/CSRF/broadcast logic, log redaction) is pure and
+  needed no database — 23 of this phase's new tests were actually run.
+- RS256 was used instead of EdDSA (both allowed by the task) because
+  `@types/jsonwebtoken@9.0.10` doesn't type `"EdDSA"` yet; not a security
+  downgrade, see `docs/auth/PROGRESS.md` Phase 7 detail.
+- No browser testing was performed against the new sessions page or the
+  dashboard logout button.
+
 ## [0.7.0] - 2026-10-07
 
 ### Added
@@ -301,7 +369,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and creates a git tag.
 - References to AUTH_RULES.md from CLAUDE.md and AGENTS.md.
 
-[Unreleased]: https://example.com/compare/v0.7.0...HEAD
+[Unreleased]: https://example.com/compare/v0.8.0...HEAD
+[0.8.0]: https://example.com/compare/v0.7.0...v0.8.0
 [0.7.0]: https://example.com/compare/v0.6.0...v0.7.0
 [0.6.0]: https://example.com/compare/v0.5.0...v0.6.0
 [0.5.0]: https://example.com/compare/v0.4.0...v0.5.0
