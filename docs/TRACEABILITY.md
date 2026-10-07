@@ -93,37 +93,37 @@ in AUTH_RULES.md rule 13. All items start as "Not started" until implemented and
 
 ## DATABASE TABLES AND DATA CONNECTIONS (Phase 3)
 
-| Item                                                                                | Phase | Implementing files | Tests | Status      | Notes |
-| ----------------------------------------------------------------------------------- | ----- | ------------------ | ----- | ----------- | ----- |
-| 1. User table                                                                       | 3     |                    |       | Not started |       |
-| 2. Profile table                                                                    | 3     |                    |       | Not started |       |
-| 3. Auth table                                                                       | 3     |                    |       | Not started |       |
-| 4. Roles                                                                            | 3     |                    |       | Not started |       |
-| 5. Permissions                                                                      | 3     |                    |       | Not started |       |
-| 6. Foreign keys                                                                     | 3     |                    |       | Not started |       |
-| 7. Unique constraints                                                               | 3     |                    |       | Not started |       |
-| 8. Nullability                                                                      | 3     |                    |       | Not started |       |
-| 9. Default values                                                                   | 3     |                    |       | Not started |       |
-| 10. Database triggers                                                               | 3     |                    |       | Not started |       |
-| 11. Functions                                                                       | 3     |                    |       | Not started |       |
-| 12. Row-level security                                                              | 3     |                    |       | Not started |       |
-| 13. RLS policies                                                                    | 3     |                    |       | Not started |       |
-| 14. Insert policies                                                                 | 3     |                    |       | Not started |       |
-| 15. Select policies                                                                 | 3     |                    |       | Not started |       |
-| 16. Update policies                                                                 | 3     |                    |       | Not started |       |
-| 17. Delete policies                                                                 | 3     |                    |       | Not started |       |
-| 18. Service-role usage                                                              | 3     |                    |       | Not started |       |
-| 19. Anonymous access                                                                | 3     |                    |       | Not started |       |
-| 20. Privileged queries                                                              | 3     |                    |       | Not started |       |
-| 21. User/profile synchronization                                                    | 3     |                    |       | Not started |       |
-| 22. Orphaned users                                                                  | 3     |                    |       | Not started |       |
-| 23. Duplicate profiles                                                              | 3     |                    |       | Not started |       |
-| 24. Race conditions during profile creation                                         | 3     |                    |       | Not started |       |
-| 25. Missing records                                                                 | 3     |                    |       | Not started |       |
-| 26. Deleted records                                                                 | 3     |                    |       | Not started |       |
-| 27. Soft-deleted accounts                                                           | 3     |                    |       | Not started |       |
-| 28. Data consistency                                                                | 3     |                    |       | Not started |       |
-| 29. A newly authenticated user reliably obtains the correct profile and permissions | 3     |                    |       | Not started |       |
+| Item | Phase | Implementing files | Tests | Status | Notes |
+| ----------------------------------------------------------------------------------- | ----- | users table: id/email(citext,unique)/emailVerifiedAt/passwordHash/status/failedLoginCount/lockedUntil/timestamps/deletedAt — packages/database/prisma/schema.prisma, packages/database/prisma/migrations/00000000000001_phase3_auth_tables/migration.sql | apps/api/test/signup-integrity.integration.spec.ts; apps/api/test/cascade-and-soft-delete.integration.spec.ts | Requires manual verification | ----- |
+| 1. User table | 3 | profiles table: userId PK+FK cascade, display fields, createdAt+updatedAt — packages/database/prisma/schema.prisma, packages/database/prisma/migrations/00000000000001_phase3_auth_tables/migration.sql | apps/api/test/cascade-and-soft-delete.integration.spec.ts | Requires manual verification | |
+| 2. Profile table | 3 | auth_events, one_time_tokens, oauth_accounts, sessions tables — packages/database/prisma/schema.prisma, packages/database/prisma/migrations/00000000000001_phase3_auth_tables/migration.sql | apps/api/test/rls.integration.spec.ts (sessions); scripts/check-db-consistency.integration.spec.ts | Requires manual verification | |
+| 3. Auth table | 3 | roles table (unchanged from Phase 2) — packages/database/prisma/schema.prisma, packages/database/prisma/migrations/00000000000001_phase3_auth_tables/migration.sql | apps/api/test/rls.integration.spec.ts (roles SELECT policy) | Requires manual verification | |
+| 4. Roles | 3 | permissions table (unchanged from Phase 2) — packages/database/prisma/schema.prisma, packages/database/prisma/migrations/00000000000001_phase3_auth_tables/migration.sql | N/A — unchanged schema, no new test needed this phase | Requires manual verification | |
+| 5. Permissions | 3 | Every relation declared with @relation + onDelete — packages/database/prisma/schema.prisma, packages/database/prisma/migrations/00000000000001_phase3_auth_tables/migration.sql | apps/api/test/cascade-and-soft-delete.integration.spec.ts | Requires manual verification | |
+| 6. Foreign keys | 3 | users.email (citext unique), sessions.refreshTokenHash (unique), one_time_tokens.tokenHash (unique), oauth_accounts (provider,providerAccountId unique), role_permissions/user_roles composite PKs — packages/database/prisma/schema.prisma, packages/database/prisma/migrations/00000000000001_phase3_auth_tables/migration.sql | apps/api/test/signup-integrity.integration.spec.ts (email); scripts/check-db-consistency.spec.ts (duplicate-profile check, always 0 by PK) | Requires manual verification | |
+| 7. Unique constraints | 3 | NOT NULL on every required column; passwordHash nullable only for OAuth/OTP-only accounts — packages/database/prisma/schema.prisma, packages/database/prisma/migrations/00000000000001_phase3_auth_tables/migration.sql | Requires manual verification — written review of schema.prisma against the Phase 3 column spec | Requires manual verification | |
+| 8. Nullability | 3 | Defaults: status=pending_verification, failedLoginCount=0, timestamps=now(), familyId=uuid() — packages/database/prisma/schema.prisma, packages/database/prisma/migrations/00000000000001_phase3_auth_tables/migration.sql | Requires manual verification — written review of schema.prisma defaults | Requires manual verification | |
+| 9. Default values | 3 | Decision: no database triggers — see docs/auth/ARCHITECTURE.md / FINDINGS.md | N/A — deliberately not implemented, documented decision | Requires manual verification | |
+| 10. Database triggers | 3 | Decision: no stored functions beyond app_current_user_id() (RLS helper) — migration.sql | apps/api/test/rls.integration.spec.ts | Requires manual verification | |
+| 11. Functions | 3 | RLS enabled on users/profiles/sessions/one_time_tokens/oauth_accounts/auth_events/roles/permissions/role_permissions/user_roles — migration.sql | apps/api/test/rls.integration.spec.ts | Requires manual verification | |
+| 12. Row-level security | 3 | app_anon / app_authenticated roles + policies — migration.sql | apps/api/test/rls.integration.spec.ts | Requires manual verification | |
+| 13. RLS policies | 3 | No INSERT policy for app_authenticated on any table (server-mediated only) — migration.sql | apps/api/test/rls.integration.spec.ts (INSERT rejected) | Requires manual verification | |
+| 14. Insert policies | 3 | SELECT-own policies on users/profiles/sessions/one_time_tokens/oauth_accounts/auth_events/user_roles; SELECT-all on roles/permissions/role_permissions — migration.sql | apps/api/test/rls.integration.spec.ts | Requires manual verification | |
+| 15. Select policies | 3 | UPDATE-own (WITH CHECK) policies on profiles/sessions/one_time_tokens — migration.sql | apps/api/test/rls.integration.spec.ts | Requires manual verification | |
+| 16. Update policies | 3 | No DELETE policy for app_authenticated on any table — migration.sql | apps/api/test/rls.integration.spec.ts (DELETE rejected) | Requires manual verification | |
+| 17. Delete policies | 3 | Decision: apps/api's existing DATABASE_URL role is the schema owner and bypasses RLS (FORCE ROW LEVEL SECURITY deliberately not set) — see docs/auth/ARCHITECTURE.md / FINDINGS.md | Requires manual verification — architectural decision, not independently testable | Requires manual verification | |
+| 18. Service-role usage | 3 | app_anon has zero grants on every auth table — migration.sql | apps/api/test/rls.integration.spec.ts | Requires manual verification | |
+| 19. Anonymous access | 3 | Role/permission assignment, account status changes — service-role (owner) connection only, never app_authenticated | apps/api/test/rls.integration.spec.ts (no write grant for app_authenticated) | Requires manual verification | |
+| 20. Privileged queries | 3 | AuthService.signUp: single $transaction (user+profile+role) — apps/api/src/auth/auth.service.ts; self-healing upsert in PrincipalService.resolve | apps/api/test/signup-integrity.integration.spec.ts; apps/api/test/signup-integrity.integration.spec.ts (transaction atomicity) | Requires manual verification | |
+| 21. User/profile synchronization | 3 | Self-healing profile creation in PrincipalService.resolve — apps/api/src/auth/principal.service.ts | scripts/check-db-consistency.integration.spec.ts | Requires manual verification | |
+| 22. Orphaned users | 3 | profiles.userId is the primary key — structurally impossible; defensive check anyway — scripts/check-db-consistency.ts | scripts/check-db-consistency.spec.ts; scripts/check-db-consistency.integration.spec.ts | Requires manual verification | |
+| 23. Duplicate profiles | 3 | Single $transaction in AuthService.signUp closes the race between user-create and role-assign | apps/api/test/signup-integrity.integration.spec.ts (10 concurrent signups; 2 concurrent same-email signups) | Requires manual verification | |
+| 24. Race conditions during profile creation | 3 | scripts/check-db-consistency.ts: orphanedUsers, usersWithoutRoles, duplicateProfileUserIds, danglingSessions | scripts/check-db-consistency.spec.ts; scripts/check-db-consistency.integration.spec.ts | Requires manual verification | |
+| 25. Missing records | 3 | ON DELETE CASCADE from users to profiles/sessions/oneTimeTokens/oauthAccounts/userRoles/etc — schema.prisma | apps/api/test/cascade-and-soft-delete.integration.spec.ts | Requires manual verification | |
+| 26. Deleted records | 3 | users.deletedAt + status=deleted; AuthService.softDeleteAccount revokes all sessions, blocks login — apps/api/src/auth/auth.service.ts | apps/api/test/cascade-and-soft-delete.integration.spec.ts | Requires manual verification | |
+| 27. Soft-deleted accounts | 3 | scripts/check-db-consistency.ts as the single source of truth for consistency | scripts/check-db-consistency.spec.ts; scripts/check-db-consistency.integration.spec.ts | Requires manual verification | |
+| 28. Data consistency | 3 | PrincipalService.resolve: active-status gate + self-healing profile + role/permission resolution — apps/api/src/auth/principal.service.ts | apps/api/test/signup-integrity.integration.spec.ts; apps/api/test/rls.integration.spec.ts | Requires manual verification | |
+| 29. A newly authenticated user reliably obtains the correct profile and permissions | 3 | | | Not started | |
 
 ## SIGNUP AND VERIFICATION (Phase 4)
 

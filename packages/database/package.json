@@ -10,14 +10,20 @@
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "studio": "prisma studio",
+    "seed": "tsx prisma/seed.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
   "dependencies": {
-    "@prisma/client": "^6.1.0"
+    "@prisma/client": "^6.1.0",
+    "@saas/security": "workspace:*"
   },
   "devDependencies": {
     "prisma": "^6.1.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
 }

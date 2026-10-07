@@ -6,8 +6,25 @@ import type { AuthenticatedPrincipal, PermissionName, RoleName } from "@saas/typ
 export class PrincipalService {
   async resolve(userId: string, sessionId: string): Promise<AuthenticatedPrincipal> {
     const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user || user.status === "suspended" || user.status === "deleted") {
+    if (!user || user.deletedAt || user.status === "disabled" || user.status === "deleted") {
       throw new UnauthorizedException("Account is not active.");
+    }
+    if (user.status === "locked" && user.lockedUntil && user.lockedUntil > new Date()) {
+      throw new UnauthorizedException("Account is not active.");
+    }
+
+    // Self-healing guard against an orphaned user (e.g. a profile row lost to a bug
+    // predating the transactional signUp in AuthService, or any other out-of-band
+    // write that created a user without one). A plain SELECT first, rather than an
+    // unconditional upsert, so the common case (profile already exists) costs one
+    // read and no write on every authenticated request. The rare race between two
+    // concurrent requests for the same newly-orphaned user is handled by `create`'s
+    // unique `userId` PK violation, swallowed below — idempotent either way.
+    const profile = await prisma.profile.findUnique({ where: { userId } });
+    if (!profile) {
+      await prisma.profile.create({ data: { userId } }).catch((err: { code?: string }) => {
+        if (err.code !== "P2002") throw err; // P2002 = unique constraint — lost the race, fine.
+      });
     }
 
     const userRoles = await prisma.userRole.findMany({

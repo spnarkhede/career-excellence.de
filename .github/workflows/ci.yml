@@ -70,8 +70,14 @@ jobs:
       - name: Run database migrations
         run: pnpm --filter @saas/database migrate:deploy
 
+      - name: Seed database (roles and permissions)
+        run: pnpm db:seed
+
       - name: Unit + integration tests
         run: pnpm test
+
+      - name: Database consistency check
+        run: pnpm db:check-consistency
 
       - name: Circular dependency check
         run: pnpm check:cycles

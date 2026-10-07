@@ -1,6 +1,6 @@
 export type UUID = string;
 
-export type AccountStatus = "pending_verification" | "active" | "suspended" | "deleted";
+export type AccountStatus = "pending_verification" | "active" | "disabled" | "locked" | "deleted";
 
 export interface User {
   id: UUID;
@@ -37,22 +37,25 @@ export interface Role {
 export interface SessionMetadata {
   id: UUID;
   userId: UUID;
+  familyId: UUID;
   createdAt: string;
-  lastActiveAt: string;
+  lastUsedAt: string;
   expiresAt: string;
+  absoluteExpiresAt: string;
   userAgent: string | null;
-  ipAddress: string | null;
+  ipHash: string | null;
   revokedAt: string | null;
   revokedReason: string | null;
 }
 
-export interface SecurityEvent {
+export interface AuthEvent {
   id: UUID;
   userId: UUID | null;
   type: string;
-  metadata: Record<string, unknown>;
-  ipAddress: string | null;
+  ipHash: string | null;
   userAgent: string | null;
+  requestId: string | null;
+  metadata: Record<string, unknown>;
   createdAt: string;
 }
 

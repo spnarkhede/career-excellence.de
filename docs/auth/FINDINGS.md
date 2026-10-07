@@ -267,3 +267,94 @@ Prisma.InputJsonValue` at the one call site.
 - **Regression risk:** N/A — no change made.
 - **How to test the fix:** Not applicable until a later phase addresses each item;
   wired into CI as informational (`|| true`) in the meantime.
+
+### BUG-006: Generated Phase 3 migration would have dropped and re-added every table's primary key column, silently orphaning every relationship on a populated database
+
+- **Label:** Confirmed bug
+- **Severity:** CRITICAL — this was caught before being committed, so it never ran
+  against any real data, but had it shipped as-is and been applied to a populated
+  database, every `id`/`userId`/`roleId`/`permissionId` primary/foreign key in the
+  schema would have been dropped and recreated with brand-new random values, breaking
+  every foreign-key relationship in the database (every session, profile, role
+  assignment, etc. would point at ids that no longer matched any row) with no error
+  raised at migration time.
+- **Status:** Fixed
+- **Component/file:** `packages/database/prisma/schema.prisma`
+- **Exact location:** Every `id`/`userId`/`roleId`/`permissionId` field across every
+  model, briefly annotated with `@db.Uuid` while drafting the Phase 3 schema.
+- **Problem:** Adding `@db.Uuid` to a field that previously had no native-type
+  annotation (and was therefore stored as `TEXT`) changes the underlying Postgres
+  column type. Prisma's migration diff engine cannot `ALTER COLUMN ... TYPE uuid` a
+  `TEXT` column holding arbitrary UUID-formatted strings via a simple cast in every
+  case it generates, so its generated migration instead did `DROP COLUMN "id"; ADD
+COLUMN "id" UUID NOT NULL` — on a non-empty table, this is equivalent to assigning
+  every row a new, unrelated id with no connection to any existing foreign key
+  reference.
+- **Root cause:** The Phase 3 instructions' "id uuid" for the `users` table was
+  interpreted, during drafting, as "use Postgres's native `uuid` column type," when the
+  existing schema already satisfied the actual requirement — ids being
+  UUID-_formatted_ values — via `String @id @default(uuid())`, stored as `TEXT`.
+  Native-type-casting an existing TEXT primary key is a materially different, far
+  riskier operation than what the instruction called for.
+- **Trigger:** Running `prisma migrate diff` against the drafted schema and reading
+  the generated SQL (`packages/database/prisma/migrations/00000000000001_phase3_auth_tables/migration.sql`)
+  before applying it — the risk was caught by inspection, not by running the migration
+  against real data (no live database was used in this phase at all; see FINDINGS
+  note on database access below).
+- **Impact:** None — caught before any migration was applied anywhere.
+- **Reproduction steps:** 1) Add `@db.Uuid` to a `String @id @default(uuid())` field in
+  a schema that previously had no native type override. 2) Run `prisma migrate diff`
+  from the prior schema to the new one. 3) Observe `DROP COLUMN "id"; ADD COLUMN "id"
+... NOT NULL` in the output, with no `USING` cast preserving existing values.
+- **Expected behavior:** A migration that changes an id column's representation
+  without changing its logical identity should never be able to silently disconnect
+  every foreign key referencing it.
+- **Actual behavior:** It would have, had this not been caught by manual review of the
+  generated SQL before committing it.
+- **Why it happens:** See root cause.
+- **Related components:** Every model in `schema.prisma` with a primary or foreign key
+  (all of them) — the blast radius of this one mistake was the entire schema.
+- **Recommended fix (applied):** Removed every `@db.Uuid` annotation; ids remain
+  `String @id @default(uuid())` (TEXT-backed, UUID-formatted). Regenerated the
+  migration diff, which shrank from ~300 lines (mostly destructive drop/recreate pairs)
+  to ~130 lines of only the actually-intended changes.
+- **Regression risk:** None — the fix is a pure revert of the mistaken annotation; the
+  resulting migration was re-reviewed line by line (see this file's and
+  `ARCHITECTURE.md`'s discussion of the final migration content).
+- **How to test the fix:** Manual review of `migration.sql` confirms no table's primary
+  key column is dropped; `prisma validate` and `prisma generate` both succeed against
+  the corrected schema.
+- **Process note:** This is exactly the scenario `AUTH_RULES.md` rule 1 ("do not assume
+  configuration is correct... trace the actual code path") and rule 7 ("prefer the
+  smallest safe change") are for — every generated migration in this phase was read in
+  full before being treated as final, specifically to catch this class of mistake.
+
+### Note: no live database was available to execute migrations or DB-dependent tests in this phase
+
+- **Label:** Missing information
+- **Severity:** N/A (process constraint, not a defect)
+- **Status:** Requires manual verification
+- **Problem:** This phase's environment has no Docker and no accessible Postgres
+  instance with known credentials (port 5432 is occupied by an unrelated, pre-existing
+  Postgres instance on the machine with unknown credentials — not probed further, per
+  `AUTH_RULES.md` rule 2/4). `prisma migrate dev`/`deploy` could not be run against a
+  real database; none of the 8 explicitly-named Phase 3 TESTS that require a database
+  (tests 1, 2, 3, 4, 6, 7, 8) were executed for real in this session.
+- **What was done instead:** `prisma migrate diff` (schema-to-schema, no DB connection
+  required) was used to generate both migrations from the actual schema change, and
+  every line was manually reviewed (catching BUG-006 above). All 8 DB-dependent tests
+  were written as real integration tests (not mocks) against the actual Prisma client
+  and the actual migration SQL's RLS policies, structured to skip cleanly (not fail)
+  when no database is reachable, and to run for real in CI, which provisions a genuine
+  Postgres service container and already runs migrations + (now) seeding before tests
+  — see `.github/workflows/ci.yml`.
+- **Impact:** Every status in `docs/TRACEABILITY.md` for this phase's checklist items
+  is `Requires manual verification`, per `AUTH_RULES.md` rule 13 — none are marked
+  `Confirmed working`, because no test was actually run against a real Postgres
+  instance to confirm it in this session.
+- **Recommended next step:** The next CI run on this branch (or a human running `pnpm
+--filter @saas/database migrate:deploy && pnpm db:seed && pnpm test` against a real
+  local Postgres) will execute all 8 tests for real. If any fails, update this file
+  with the real failure and its root cause before claiming Phase 3 done.
+- **How to test:** `pnpm --filter @saas/database migrate:deploy && pnpm db:seed &&
+pnpm test && pnpm db:check-consistency` against a real, disposable Postgres database.

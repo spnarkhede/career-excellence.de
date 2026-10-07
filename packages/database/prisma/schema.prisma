@@ -2,19 +2,31 @@
 // Do not add product-specific tables here; extend in a product module instead.
 
 generator client {
-  provider = "prisma-client-js"
-  output   = "../generated/client"
+  provider        = "prisma-client-js"
+  output          = "../generated/client"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  // Enables the `citext` type used below for `users.email` — native,
+  // database-level case-insensitive uniqueness (no app-side `LOWER()` index).
+  extensions = [citext]
 }
 
+// --- Enums -----------------------------------------------------------------
+
+// `pending_verification` is kept in addition to the four statuses named in the
+// Phase 3 spec (active, disabled, locked, deleted) because the existing email
+// verification gate (AuthService.signUp / verifyEmail) depends on a distinct
+// "not yet verified" state — collapsing it into `active` would let an
+// unverified account sign in. Documented decision, see docs/auth/FINDINGS.md.
 enum AccountStatus {
   pending_verification
   active
-  suspended
+  disabled
+  locked
   deleted
 }
 
@@ -26,73 +38,166 @@ enum RoleName {
   super_administrator
 }
 
+enum OneTimeTokenPurpose {
+  verify_email
+  reset_password
+  otp
+  magic_link
+}
+
+// --- Core identity -----------------------------------------------------------
+
 model User {
-  id              String        @id @default(uuid())
-  email           String        @unique
+  id String @id @default(uuid())
+
+  // citext gives case-insensitive uniqueness natively at the database level.
+  // Trimming (no leading/trailing whitespace) is enforced by a CHECK constraint
+  // added in the migration SQL (Prisma has no declarative CHECK support here)
+  // and by `emailSchema` (`z.string().trim().toLowerCase()`) at the app boundary.
+  email String @unique @db.Citext
+
   emailVerifiedAt DateTime?
-  status          AccountStatus @default(pending_verification)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+
+  // Null only for OAuth-only or OTP/magic-link-only accounts (no password set).
+  passwordHash String?
+
+  status           AccountStatus @default(pending_verification)
+  failedLoginCount Int           @default(0)
+  lockedUntil      DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
   profile           Profile?
-  authIdentities     AuthIdentity[]
-  sessions           Session[]
-  userRoles          UserRole[]
-  securityEvents     SecurityEvent[]
-  auditLogs          AuditLog[]
-  consents           Consent[]
-  cookiePreferences  CookiePreference[]
-  notificationPrefs  NotificationPreference[]
-  files              File[]
-  deletionRequests   AccountDeletionRequest[]
-  exportRequests     DataExportRequest[]
-  verificationTokens VerificationToken[]
+  oauthAccounts     OauthAccount[]
+  sessions          Session[]
+  userRoles         UserRole[]
+  authEvents        AuthEvent[]
+  auditLogs         AuditLog[]
+  consents          Consent[]
+  cookiePreferences CookiePreference[]
+  notificationPrefs NotificationPreference[]
+  files             File[]
+  deletionRequests  AccountDeletionRequest[]
+  exportRequests    DataExportRequest[]
+  oneTimeTokens     OneTimeToken[]
 
+  // Every lookup path gets an index: email is already unique (=indexed); status
+  // and deletedAt back the admin/listing and soft-delete-filtering lookup paths.
+  @@index([status])
+  @@index([deletedAt])
   @@map("users")
 }
 
 model Profile {
-  userId      String  @id
-  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String @id
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   displayName String?
   avatarUrl   String?
-  updatedAt   DateTime @updatedAt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("profiles")
 }
 
-// Credential/identity record for a given authentication method (password, Google OAuth, etc).
-model AuthIdentity {
-  id         String   @id @default(uuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  provider   String // "password" | "google" | "microsoft" | "github"
-  providerId String // external subject id, or empty for password
-  passwordHash String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+// Links an external OAuth identity (Google, Microsoft, GitHub, ...) to a User.
+// Password credentials live directly on `users.passwordHash`, not here — this
+// table is OAuth-only, per the Phase 3 schema spec.
+model OauthAccount {
+  id                      String   @id @default(uuid())
+  provider                String // "google" | "microsoft" | "github"
+  providerAccountId       String // the external provider's stable subject id
+  userId                  String
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailAtLinkTime         String
+  emailVerifiedByProvider Boolean  @default(false)
+  createdAt               DateTime @default(now())
 
-  @@unique([provider, providerId])
+  @@unique([provider, providerAccountId])
   @@index([userId])
-  @@map("auth_identities")
+  @@map("oauth_accounts")
 }
 
+// --- Sessions ----------------------------------------------------------------
+
 model Session {
-  id            String    @id @default(uuid())
-  userId        String
-  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String @id @default(uuid())
+  userId           String
+  user             User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   refreshTokenHash String @unique
-  userAgent     String?
-  ipAddress     String?
+
+  // All sessions created by one continuous login→refresh→refresh chain share a
+  // familyId; detecting a reused (already-rotated) refresh token lets the app
+  // revoke the entire family as a stolen-token response, not just one session.
+  familyId String @default(uuid())
+
+  // Rolling expiry (extended on each refresh) vs. an absolute ceiling that is
+  // never extended — forces a fresh login after N days even with continuous use.
+  expiresAt         DateTime
+  absoluteExpiresAt DateTime
+
   createdAt     DateTime  @default(now())
-  lastActiveAt  DateTime  @default(now())
-  expiresAt     DateTime
+  lastUsedAt    DateTime  @default(now())
   revokedAt     DateTime?
   revokedReason String?
 
+  userAgent String?
+  // Hashed, never raw — sessions must never store a reversible client IP.
+  ipHash    String?
+
   @@index([userId])
+  @@index([familyId])
   @@map("sessions")
 }
+
+// --- One-time tokens -----------------------------------------------------------
+
+// Backs email verification, password reset, OTP login, and magic-link login.
+// Hashes only — the raw token/code is never persisted (see @saas/security/server
+// hashToken), and AUTH_RULES.md rule 4 forbids ever logging the raw value.
+model OneTimeToken {
+  id        String              @id @default(uuid())
+  userId    String
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose   OneTimeTokenPurpose
+  tokenHash String              @unique
+  attempts  Int                 @default(0)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime            @default(now())
+
+  @@index([userId, purpose])
+  @@map("one_time_tokens")
+}
+
+// --- Auth events (no secrets) ---------------------------------------------------
+
+// Append-only auth lifecycle log (login/logout/signup/etc). Never stores a
+// credential, token, or raw IP — ipHash only, per AUTH_RULES.md rule 4.
+// `metadata` is an additive, backward-compatible extension beyond the Phase 3
+// spec's literal column list, kept for non-secret contextual detail (e.g. which
+// field failed validation); the "no secrets" invariant applies to it exactly as
+// it did to the predecessor `security_events` table this replaces.
+model AuthEvent {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  type      String
+  ipHash    String?
+  userAgent String?
+  requestId String?
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([type])
+  @@map("auth_events")
+}
+
+// --- Roles and permissions ------------------------------------------------------
 
 model Role {
   id          String           @id @default(uuid())
@@ -131,20 +236,7 @@ model UserRole {
   @@map("user_roles")
 }
 
-model SecurityEvent {
-  id        String   @id @default(uuid())
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  type      String
-  metadata  Json     @default("{}")
-  ipAddress String?
-  userAgent String?
-  createdAt DateTime @default(now())
-
-  @@index([userId])
-  @@index([type])
-  @@map("security_events")
-}
+// --- Audit / compliance (unchanged from Phase 2 — out of this phase's scope) ----
 
 model AuditLog {
   id         String   @id @default(uuid())
@@ -162,11 +254,11 @@ model AuditLog {
 }
 
 model Consent {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type      String // e.g. "terms", "privacy"
-  version   String
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type       String // e.g. "terms", "privacy"
+  version    String
   acceptedAt DateTime @default(now())
 
   @@index([userId])
@@ -174,45 +266,45 @@ model Consent {
 }
 
 model CookiePreference {
-  userId        String   @id
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  analytics     Boolean  @default(false)
-  marketing     Boolean  @default(false)
+  userId         String   @id
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  analytics      Boolean  @default(false)
+  marketing      Boolean  @default(false)
   consentVersion String
-  updatedAt     DateTime @updatedAt
+  updatedAt      DateTime @updatedAt
 
   @@map("cookie_preferences")
 }
 
 model NotificationPreference {
-  userId            String   @id
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  productUpdates    Boolean  @default(true)
-  securityAlerts    Boolean  @default(true)
-  updatedAt         DateTime @updatedAt
+  userId         String   @id
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productUpdates Boolean  @default(true)
+  securityAlerts Boolean  @default(true)
+  updatedAt      DateTime @updatedAt
 
   @@map("notification_preferences")
 }
 
 model File {
-  id         String   @id @default(uuid())
-  ownerId    String
-  owner      User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  bucket     String
-  objectKey  String   @unique
-  mimeType   String
-  sizeBytes  Int
-  createdAt  DateTime @default(now())
+  id        String   @id @default(uuid())
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  bucket    String
+  objectKey String   @unique
+  mimeType  String
+  sizeBytes Int
+  createdAt DateTime @default(now())
 
   @@index([ownerId])
   @@map("files")
 }
 
 model FeatureFlag {
-  key         String  @id
+  key         String   @id
   description String?
-  enabled     Boolean @default(false)
-  rules       Json    @default("{}")
+  enabled     Boolean  @default(false)
+  rules       Json     @default("{}")
   updatedAt   DateTime @updatedAt
 
   @@map("feature_flags")
@@ -244,12 +336,12 @@ model DataExportRequest {
 }
 
 model WebhookEvent {
-  id          String   @id @default(uuid())
+  id          String    @id @default(uuid())
   source      String
   eventType   String
   payload     Json
   processedAt DateTime?
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
 
   @@index([source, eventType])
   @@map("webhook_events")
@@ -262,20 +354,3 @@ model SystemSetting {
 
   @@map("system_settings")
 }
-
-// One-time tokens backing email verification, password reset, and OTP login.
-model VerificationToken {
-  id         String    @id @default(uuid())
-  userId     String
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  purpose    String // "email_verification" | "password_reset" | "otp"
-  tokenHash  String    @unique
-  expiresAt  DateTime
-  consumedAt DateTime?
-  attempts   Int       @default(0)
-  createdAt  DateTime  @default(now())
-
-  @@index([userId, purpose])
-  @@map("verification_tokens")
-}
-

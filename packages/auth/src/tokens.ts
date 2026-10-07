@@ -1,7 +1,7 @@
 import { randomInt } from "node:crypto";
 import { generateSecureToken } from "@saas/utils";
 
-export type TokenPurpose = "email_verification" | "password_reset" | "otp";
+export type TokenPurpose = "verify_email" | "reset_password" | "otp" | "magic_link";
 
 export interface OneTimeToken {
   token: string;

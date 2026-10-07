@@ -1,7 +1,7 @@
 {
   "name": "saas-starter",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "engines": {
     "node": ">=20.0.0",
@@ -24,6 +24,8 @@
     "db:migrate": "pnpm --filter @saas/database migrate:dev",
     "db:generate": "pnpm --filter @saas/database generate",
     "db:studio": "pnpm --filter @saas/database studio",
+    "db:seed": "tsx packages/database/prisma/seed.ts",
+    "db:check-consistency": "tsx scripts/check-db-consistency.ts",
     "check:deadcode": "knip",
     "check:duplicates": "jscpd .",
     "check:cycles": "madge --circular --extensions ts,tsx apps packages",

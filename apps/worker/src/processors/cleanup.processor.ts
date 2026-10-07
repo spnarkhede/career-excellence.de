@@ -9,7 +9,7 @@ export const cleanupWorker = new Worker(
   async () => {
     const now = new Date();
     const [tokens, sessions] = await Promise.all([
-      prisma.verificationToken.deleteMany({ where: { expiresAt: { lt: now } } }),
+      prisma.oneTimeToken.deleteMany({ where: { expiresAt: { lt: now } } }),
       prisma.session.deleteMany({
         where: { revokedAt: { lt: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) } },
       }),

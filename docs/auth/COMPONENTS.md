@@ -180,6 +180,135 @@ was scoped to deliver.
    back from the barrel). Fixed by extracting the shared interfaces into
    `packages/auth/src/types.ts`. See FINDINGS.md BUG-004.
 
+## Phase 3 components (database tables and data connections)
+
+### Schema (`packages/database/prisma/schema.prisma`) — Implemented
+
+1. Defines users (citext email, passwordHash, status/failedLoginCount/lockedUntil,
+   deletedAt), profiles, oauth_accounts, sessions (familyId, absoluteExpiresAt,
+   ipHash), one_time_tokens, auth_events (ipHash, requestId), roles/permissions/
+   role_permissions/user_roles, plus the unchanged Phase 2 audit/compliance tables.
+2. Read by `prisma generate` (produces the typed client every service imports).
+3. Calls nothing — declarative schema file.
+4. N/A.
+5. N/A.
+6. On failure: `prisma validate`/`prisma generate` fail loudly with a line number.
+7. Secure: `passwordHash` nullable only for OAuth/OTP-only accounts; no raw IP or
+   secret columns anywhere (`ipHash` only); CITEXT gives case-insensitive email
+   uniqueness at the database level, not just app-side.
+8. No inconsistent-state risk by itself — see the migration below for the real
+   data-integrity guarantees (FKs, constraints, RLS).
+
+### Migrations (`packages/database/prisma/migrations/`) — Implemented
+
+1. `00000000000000_init`: the baseline schema as it stood before this phase.
+   `00000000000001_phase3_auth_tables`: every Phase 3 schema change, plus RLS roles/
+   policies and a `users.email` trimmed-CHECK constraint, as raw SQL.
+2. Applied by `prisma migrate deploy` (CI) / `migrate dev` (local).
+3. Calls Postgres directly.
+4. Receives nothing; DDL only.
+5. Returns nothing; throws on failure (e.g. a constraint violation on existing data).
+6. On failure: the whole migration transaction (where Postgres allows transactional
+   DDL — the enum swaps are explicitly wrapped in `BEGIN`/`COMMIT`) rolls back; no
+   partial schema state.
+7. Secure: RLS policies deny all anonymous access and restrict authenticated access
+   to each row's own data; service-role (schema owner) usage is documented, not
+   silently assumed.
+8. **Known limitation, documented in this migration's own header comments**: the
+   `'suspended'` → `'disabled'` status backfill and the CITEXT email-case
+   normalization are best-effort safe on a populated table but have not been
+   exercised against real production-shaped data (no database was available this
+   phase — see `FINDINGS.md`).
+9. **Bug found and fixed in this phase (BUG-006)**: an early draft of this migration
+   would have dropped and recreated every table's primary key column, orphaning every
+   foreign key on a populated database. Caught by manual review before being applied
+   anywhere. See `FINDINGS.md` BUG-006.
+
+### Row-level security (`migration.sql`, `app_anon`/`app_authenticated` roles) — Implemented
+
+1. Enables RLS on every auth table; `app_anon` has zero grants (no anonymous access);
+   `app_authenticated` can only SELECT/UPDATE its own rows (keyed by
+   `current_setting('app.current_user_id', true)`), with no INSERT/DELETE policy on
+   any table.
+2. Not currently wired into Prisma's actual connection (which continues to use the
+   schema-owner role and bypasses RLS, unchanged from before this phase) — exercised
+   directly in tests via `SET LOCAL ROLE` inside a transaction. See the documented
+   decision in `ARCHITECTURE.md`/`FINDINGS.md`.
+3. Calls the `app_current_user_id()` SQL function.
+4. Receives the session variable `app.current_user_id`, set via `set_config(...,
+true)` (transaction-scoped).
+5. Returns a filtered row set (SELECT) or an affected-row count of 0 (UPDATE/DELETE
+   blocked by policy) or a `permission denied` error (no GRANT at all for that
+   action).
+6. On failure: fails closed — a missing/mismatched `current_user_id` session variable
+   means every RLS-scoped query returns zero rows, never another user's data.
+7. Secure: this is the literal "Row-level security... No anonymous access" checklist
+   item, implemented as real, independently-testable Postgres objects.
+8. No inconsistent-state risk — read/write filtering only, no data mutation of its
+   own beyond what a normal UPDATE/DELETE would do.
+
+### `AuthService.signUp` transactional atomicity (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Creates the user + profile (nested, same statement) + default role assignment
+   inside one `prisma.$transaction`, closing the previously-known gap where role
+   assignment was a separate, non-atomic round trip (see Phase 0's PROGRESS.md).
+2. Called by `AuthController.signUp`.
+3. Calls Prisma inside the transaction callback; `skipDuplicates` on the role-assign
+   `createMany` makes a retried transaction idempotent.
+4. Receives the signup DTO + request context.
+5. Returns the created user, or throws (rolling back the entire transaction).
+6. On failure: no partial user — Prisma's `$transaction` guarantees all-or-nothing.
+7. Secure: password is hashed (`@saas/security/server` argon2id) before ever reaching
+   the transaction; never logged.
+8. **Previously a Confirmed bug, now fixed**: see FINDINGS.md's Phase 0 discovery note
+   and this phase's resolution.
+
+### `PrincipalService.resolve` self-healing profile guard (`apps/api/src/auth/principal.service.ts`) — Implemented
+
+1. On every authenticated request, checks (one SELECT) whether the resolved user has
+   a profile row; creates one only if missing, swallowing the rare concurrent-create
+   race via the profile's unique `userId` primary key.
+2. Called by `SessionGuard` on every guarded request.
+3. Calls Prisma.
+4. Receives a `userId`.
+5. Returns the `AuthenticatedPrincipal`, or throws 401 if the account isn't active.
+6. On failure: a lost race (`P2002`) is swallowed as success (the other concurrent
+   call already created the row); any other error propagates.
+7. Secure: this is purely a data-integrity guard, not an authorization decision.
+8. **This is itself the fix for "orphaned users" (checklist items 21/22)** — it is the
+   second, independent line of defense behind the transactional signUp above.
+
+### `AuthService.softDeleteAccount` (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. Sets `deletedAt` + `status=deleted` and revokes every active session, in one
+   transaction.
+2. Not yet wired to a public HTTP endpoint (no account-settings UI exists yet) — the
+   capability exists and is directly tested at the service layer per this phase's
+   scope (database tables and data connections), not the HTTP surface.
+3. Calls Prisma.
+4. Receives a `userId`.
+5. Returns nothing; throws on failure.
+6. On failure: the whole transaction rolls back — never a half-deleted account.
+7. Secure: `AuthService.login` already checks `deletedAt`/`status` and rejects with
+   the same neutral "Invalid email or password" message as any other login failure.
+8. **Documented decision**: email is not released for reuse by a soft delete — the
+   row (and its unique email constraint) remains indefinitely. See `FINDINGS.md`.
+
+### `scripts/check-db-consistency.ts` — Implemented
+
+1. Finds orphaned users (no profile), users without roles, duplicate profile
+   `userId`s (structurally impossible, checked defensively anyway), and dangling
+   sessions (referencing a deleted user).
+2. Called by `pnpm db:check-consistency` (CI, after tests).
+3. Calls Postgres via 4 read-only raw queries.
+4. Receives nothing.
+5. Returns a report; the CLI exits non-zero (printing ids, never secrets) if anything
+   is found.
+6. On failure (a problem found): exits 1, printing exactly which ids and categories —
+   never a password/token/hash.
+7. Secure: read-only; ids only, never credential data.
+8. No inconsistent-state risk — it only reports, never fixes.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

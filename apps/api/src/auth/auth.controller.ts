@@ -43,7 +43,11 @@ import { SessionGuard } from "./session.guard.js";
 const env = loadPrivateEnv();
 
 function requestContext(req: Request) {
-  return { ipAddress: req.ip ?? null, userAgent: req.get("user-agent") ?? null };
+  return {
+    ipAddress: req.ip ?? null,
+    userAgent: req.get("user-agent") ?? null,
+    requestId: req.requestId ?? null,
+  };
 }
 
 function setSessionCookies(res: Response, tokens: IssuedTokens) {

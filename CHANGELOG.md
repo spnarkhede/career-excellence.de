@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-07
+
+### Added
+
+- Phase 3 database schema: `users` (citext email, `passwordHash`, `status`/
+  `failedLoginCount`/`lockedUntil`, `deletedAt`), `profiles` (+`createdAt`),
+  `oauth_accounts` (replaces password rows in the old `auth_identities` table),
+  `sessions` (+`familyId`, `absoluteExpiresAt`, `ipHash`), `one_time_tokens`
+  (replaces `verification_tokens`, enum `purpose`), `auth_events` (replaces
+  `security_events`, +`ipHash`, `requestId`).
+- Two reversible migrations (`00000000000000_init`, `00000000000001_phase3_auth_tables`),
+  each with a companion `down.sql`, generated via schema-to-schema diffing (no live
+  database connection required) — see `packages/database/prisma/migrations/README.md`.
+- Row-level security: `app_anon` (zero grants) and `app_authenticated` (own-row-only
+  SELECT/UPDATE, no INSERT/DELETE) roles and policies on every auth table, as
+  defense-in-depth — resolves `ARCHITECTURE.md` decision D10.
+- `AuthService.signUp` now creates the user, profile, and default role assignment in
+  a single transaction (closing a previously-known non-atomicity gap), hashes
+  passwords directly onto `users.passwordHash` (argon2id via `@saas/security/server`)
+  instead of a separate in-memory stub provider, and adds login lockout
+  (10 failed attempts → 15-minute lock), refresh-token-reuse detection (revokes the
+  entire session family), and `softDeleteAccount`.
+- `packages/security/src/server.ts`: `hashIp` (HMAC-SHA256) so sessions/auth_events
+  never store a raw client IP.
+- `scripts/check-db-consistency.ts`: finds orphaned users, users without roles,
+  duplicate profiles, and dangling sessions; wired into CI after tests.
+- `packages/database/prisma/seed.ts`: now also seeds 5 generated test users (clearly
+  fake `@example.test` emails, a shared dev-only password) alongside roles/permissions.
+- Integration tests for all 8 of this phase's named TESTS (email case-insensitivity,
+  signup concurrency, RLS, anonymous access, profile immutability, cascade/soft-delete,
+  transaction atomicity, consistency script) — written to skip cleanly without a
+  reachable database and run for real in CI.
+
+### Fixed
+
+- **BUG-006 (critical, caught before being committed)**: an early draft of the Phase 3
+  migration would have dropped and recreated every table's primary/foreign key
+  column, silently orphaning every relationship on a populated database. Caught by
+  manual review of the generated migration SQL; fixed by removing the mistaken
+  `@db.Uuid` type annotations.
+
+### Changed
+
+- `AccountStatus` enum: `suspended` → split into `disabled`/`locked` (backfilled on
+  migration); `pending_verification` kept beyond the Phase 3 spec's 4 named statuses
+  to preserve the existing email-verification gate (documented decision).
+
+### Notes
+
+- No live Postgres database was available in this session (no Docker; port 5432 is
+  occupied by an unrelated, pre-existing instance with unknown credentials). Every
+  DB-dependent test is written and will run for real in CI; none were executed
+  against a real database in this session — see `docs/auth/FINDINGS.md` and
+  `docs/auth/PROGRESS.md` Phase 3 detail.
+
 ## [0.3.0] - 2026-10-07
 
 ### Added
@@ -97,7 +152,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and creates a git tag.
 - References to AUTH_RULES.md from CLAUDE.md and AGENTS.md.
 
-[Unreleased]: https://example.com/compare/v0.3.0...HEAD
+[Unreleased]: https://example.com/compare/v0.4.0...HEAD
+[0.4.0]: https://example.com/compare/v0.3.0...v0.4.0
 [0.3.0]: https://example.com/compare/v0.2.0...v0.3.0
 [0.2.0]: https://example.com/compare/v0.1.0...v0.2.0
 [0.1.0]: https://example.com/releases/tag/v0.1.0

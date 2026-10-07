@@ -15,6 +15,17 @@ and this phase's "DONE WHEN" criteria.
 > TanStack Query, etc.) require changing it versus where it can be kept as-is. Nothing was
 > changed in this phase; this is the plan only.
 
+> **Phase 3 naming note**: §2's lifecycle flowcharts and §3's component map below predate
+> the real schema and still reference pre-Phase-3 table/model names
+> (`AuthIdentity`/`auth_identities`, `VerificationToken`/`verification_tokens`,
+> `SecurityEvent`/`security_events`). Phase 3 renamed/restructured these to
+> `OauthAccount`/`oauth_accounts` + `users.passwordHash`, `OneTimeToken`/`one_time_tokens`,
+> and `AuthEvent`/`auth_events` respectively — see §5 (data connection diagram, updated for
+> Phase 3) and `docs/auth/COMPONENTS.md`'s "Phase 3 components" section for the current,
+> authoritative names. The diagrams below are kept as-is (not relabeled) since they document
+> planning-time intent, not current implementation; §5 and `COMPONENTS.md` are the
+> implementation-accurate sources of truth.
+
 ---
 
 ## 1. Decisions
@@ -461,40 +472,63 @@ provisional phase plan proposed in the Decision Log (§7) — subject to human c
 
 ## 5. Data connection diagram
 
-Every table, its foreign keys, and which component reads or writes it. **No row-level
-security (RLS) policies exist today** — Postgres is accessed only through Prisma from
-`apps/api`/`apps/worker`, which is itself the enforced access-control boundary (see
-threat model §4, "Authorization bypass"/"IDOR"). This is flagged as a **Potential risk**
-relative to a defense-in-depth posture (no second enforcement layer at the DB level if
-`apps/api` itself had a bug) and recorded as an open question in §7.
+**Updated in Phase 3.** Every table, its foreign keys, and which component reads or
+writes it. Row-level security is now **enabled** (see §5a below) as defense-in-depth;
+the primary, always-enforced boundary remains `apps/api` (threat model §4,
+"Authorization bypass"/"IDOR") — the RLS policies are not wired into Prisma's actual
+connection, which continues to run as the schema owner and bypasses them, unchanged.
 
 ```mermaid
 erDiagram
     User ||--o| Profile : "has one"
-    User ||--o{ AuthIdentity : "has many"
+    User ||--o{ OauthAccount : "has many"
     User ||--o{ Session : "has many"
     User ||--o{ UserRole : "has many"
     Role ||--o{ UserRole : "has many"
     Role ||--o{ RolePermission : "has many"
     Permission ||--o{ RolePermission : "has many"
-    User ||--o{ SecurityEvent : "has many (nullable)"
+    User ||--o{ AuthEvent : "has many (nullable)"
     User ||--o{ AuditLog : "has many"
-    User ||--o{ VerificationToken : "has many"
+    User ||--o{ OneTimeToken : "has many"
 ```
 
-| Table                                        | Foreign keys                                                                                     | Policy                             | Trigger | Read by                                                                                    | Written by                                                                                         |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `users`                                      | —                                                                                                | None (Prisma-enforced access only) | None    | `AuthService`, `PrincipalService`, `SessionGuard`, admin user-management (future)          | `AuthService` (signup, status changes), provider adapter callbacks                                 |
-| `profiles`                                   | `userId → users.id` (cascade delete)                                                             | None                               | None    | Profile endpoints (`apps/api/src/profile`), dashboard UI via API                           | Profile update endpoints                                                                           |
-| `auth_identities`                            | `userId → users.id` (cascade delete)                                                             | None                               | None    | `AuthService` (login, OAuth linking)                                                       | `AuthService` on signup/OAuth link; provider adapter writes identity metadata                      |
-| `sessions`                                   | `userId → users.id` (cascade delete)                                                             | None                               | None    | `SessionGuard` (every authenticated request), `AuthService` (refresh/logout/revoke-others) | `AuthService` (create on login/refresh, revoke on logout/password-reset/revoke-others)             |
-| `roles` / `permissions` / `role_permissions` | `role_permissions.roleId → roles.id`, `role_permissions.permissionId → permissions.id` (cascade) | None                               | None    | `PrincipalService` (resolve principal), `@saas/authorization`                              | Seed script only; no runtime admin UI yet (flagged — see Component map, `audit_logs` gap)          |
-| `user_roles`                                 | `userId → users.id`, `roleId → roles.id` (cascade)                                               | None                               | None    | `PrincipalService`                                                                         | `AuthService` (default role on signup); future admin role-assignment endpoint                      |
-| `security_events`                            | `userId → users.id` (nullable, `SetNull` on delete)                                              | None                               | None    | Security/audit review tooling (future)                                                     | `AuthService` on every auth lifecycle action (best-effort, see Component map risk)                 |
-| `audit_logs`                                 | `actorId`-shaped FK to `users.id` (see schema)                                                   | None                               | None    | Not yet read by any code                                                                   | Not yet written by any code — **Confirmed gap**, must be wired to privileged actions before launch |
-| `verification_tokens`                        | `userId → users.id` (cascade)                                                                    | None                               | None    | `AuthService` (verify-email, password-reset-confirm, OTP-verify)                           | `AuthService` (issue on request, consume on success)                                               |
+| Table                                        | Foreign keys                                                                                       | RLS                                                              | Trigger                                                        | Read by                                               | Written by                                                                                                                 |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `users`                                      | —                                                                                                  | SELECT own only; no INSERT/UPDATE/DELETE for `app_authenticated` | None (see decision log — app-transaction-only, no DB triggers) | `AuthService`, `PrincipalService`, `SessionGuard`     | `AuthService` (signup, login lockout, password reset, soft delete)                                                         |
+| `profiles`                                   | `userId -> users.id` (cascade delete)                                                              | SELECT/UPDATE own only (`WITH CHECK` pins ownership)             | None                                                           | Profile endpoints (`apps/api/src/profile`)            | Profile update endpoint; `AuthService.signUp` (nested create); `PrincipalService.resolve` (self-healing create-if-missing) |
+| `oauth_accounts`                             | `userId -> users.id` (cascade delete)                                                              | SELECT own only                                                  | None                                                           | `AuthService` (future OAuth linking, Phase 6+)        | Not yet written by any code - schema exists ahead of the OAuth adapter work                                                |
+| `sessions`                                   | `userId -> users.id` (cascade delete)                                                              | SELECT/UPDATE own only                                           | None                                                           | `SessionGuard`, `AuthService` (refresh/logout/revoke) | `AuthService` (create on login/refresh/OTP, revoke on logout/password-reset/soft-delete/reuse-detection)                   |
+| `one_time_tokens`                            | `userId -> users.id` (cascade delete)                                                              | SELECT/UPDATE own only                                           | None                                                           | `AuthService` (verify-email, password-reset, OTP)     | `AuthService` (issue on request, consume on success)                                                                       |
+| `roles` / `permissions` / `role_permissions` | `role_permissions.roleId -> roles.id`, `role_permissions.permissionId -> permissions.id` (cascade) | SELECT-all for `app_authenticated`; no writes                    | None                                                           | `PrincipalService`, `@saas/authorization`             | Seed script only; no runtime admin UI yet (flagged - see Component map, `audit_logs` gap)                                  |
+| `user_roles`                                 | `userId -> users.id`, `roleId -> roles.id` (cascade)                                               | SELECT own only; no writes                                       | None                                                           | `PrincipalService`                                    | `AuthService.signUp` (default role, inside the signup transaction)                                                         |
+| `auth_events`                                | `userId -> users.id` (nullable, `SetNull` on delete)                                               | SELECT own only; no writes                                       | None                                                           | Security/audit review tooling (future)                | `AuthService` on every auth lifecycle action (ipHash, requestId, no secrets)                                               |
+| `audit_logs`                                 | `actorId`-shaped FK to `users.id` (see schema)                                                     | Not enabled this phase (out of scope - not an auth table)        | None                                                           | Not yet read by any code                              | Not yet written by any code - **Confirmed gap**, carried forward from Phase 0/2                                            |
 
----
+### 5a. Row-level security (new in Phase 3)
+
+**Decision (resolves D10/open question 9): RLS is enabled, as defense-in-depth,
+without changing how `apps/api` connects to Postgres today.**
+
+Two roles exist for this purpose:
+
+- `app_anon` - zero grants on any auth table. Satisfies "No anonymous access to auth
+  tables" directly and testably (connecting as this role and querying any auth table
+  fails with `permission denied`, not merely an empty result).
+- `app_authenticated` - SELECT its own rows everywhere (and UPDATE its own
+  profile/session/one-time-token rows), keyed by a Postgres session variable
+  (`current_setting('app.current_user_id', true)`) a future phase would `SET LOCAL`
+  per request if Postgres were ever made directly reachable from a client. **No
+  INSERT or DELETE policy exists for this role on any table** - every write that
+  matters (signup, login, token issuance, role assignment) is server-mediated
+  business logic, never a direct client write, by design.
+
+The role `apps/api`'s `DATABASE_URL` actually connects as is this schema's **owner**,
+and Postgres table owners bypass RLS by default (`FORCE ROW LEVEL SECURITY` was
+deliberately not set) - so the running application is completely unaffected by this
+change. The policies exist so they are independently testable
+(`apps/api/test/rls.integration.spec.ts` exercises them via `SET LOCAL ROLE` inside a
+transaction) and so a future phase that does expose Postgres more directly has a
+real, enforced second layer already in place rather than retrofitting one.
 
 ## 6. Environment variable inventory
 
@@ -538,18 +572,18 @@ No values are included below — names and purposes only, per `AUTH_RULES.md` ru
 
 ## 7. Decision log
 
-| #   | Decision                                                                                                                            | Status                                                                                                                                                     |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Keep Next.js/NestJS/Postgres/Prisma as already scaffolded                                                                           | Proposed — low risk, matches stack requirements exactly                                                                                                    |
-| D2  | Adopt Supabase Auth as the managed provider behind the existing `@saas/auth` abstraction                                            | **Proposed — requires human confirmation**; Auth.js/Clerk are valid alternatives with different tradeoffs (see §1.2)                                       |
-| D3  | Keep the existing hybrid session model (server JWT + rotating refresh + DB session row), do not adopt Supabase's own session cookie | Proposed — preserves already-working revocation behavior                                                                                                   |
-| D4  | Email OTP and magic link are both listed as "in scope" pending clarification; stack text implies a choice ("OTP or magic link")     | **Requires human decision**                                                                                                                                |
-| D5  | Microsoft and GitHub OAuth are optional per stack text; interfaces are ready but no implementation is planned until confirmed       | **Requires human decision**                                                                                                                                |
-| D6  | TOTP MFA is optional per stack text; Supabase Auth supports it natively if confirmed in scope                                       | **Requires human decision**                                                                                                                                |
-| D7  | No multi-tenant/organization scoping unless confirmed needed                                                                        | **Requires human decision** — changes schema and every authorization check if added later                                                                  |
-| D8  | Provisional 15-phase plan (Phase 2 onward) proposed below for threat-to-phase mapping purposes only                                 | **Proposed, not binding** — human may renumber/regroup                                                                                                     |
-| D9  | Production/staging/preview domain names are placeholders                                                                            | **Missing information** — needs real domains from the human before Phase 6 (OAuth) can configure real callback URLs                                        |
-| D10 | No database-level RLS policies; access control enforced only in `apps/api` via Prisma                                               | **Proposed — requires human confirmation**; adding Postgres RLS as defense-in-depth is a larger schema change and is not assumed in scope unless confirmed |
+| #   | Decision                                                                                                                            | Status                                                                                                                                                             |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D1  | Keep Next.js/NestJS/Postgres/Prisma as already scaffolded                                                                           | Proposed — low risk, matches stack requirements exactly                                                                                                            |
+| D2  | Adopt Supabase Auth as the managed provider behind the existing `@saas/auth` abstraction                                            | **Proposed — requires human confirmation**; Auth.js/Clerk are valid alternatives with different tradeoffs (see §1.2)                                               |
+| D3  | Keep the existing hybrid session model (server JWT + rotating refresh + DB session row), do not adopt Supabase's own session cookie | Proposed — preserves already-working revocation behavior                                                                                                           |
+| D4  | Email OTP and magic link are both listed as "in scope" pending clarification; stack text implies a choice ("OTP or magic link")     | **Requires human decision**                                                                                                                                        |
+| D5  | Microsoft and GitHub OAuth are optional per stack text; interfaces are ready but no implementation is planned until confirmed       | **Requires human decision**                                                                                                                                        |
+| D6  | TOTP MFA is optional per stack text; Supabase Auth supports it natively if confirmed in scope                                       | **Requires human decision**                                                                                                                                        |
+| D7  | No multi-tenant/organization scoping unless confirmed needed                                                                        | **Requires human decision** — changes schema and every authorization check if added later                                                                          |
+| D8  | Provisional 15-phase plan (Phase 2 onward) proposed below for threat-to-phase mapping purposes only                                 | **Proposed, not binding** — human may renumber/regroup                                                                                                             |
+| D9  | Production/staging/preview domain names are placeholders                                                                            | **Missing information** — needs real domains from the human before Phase 6 (OAuth) can configure real callback URLs                                                |
+| D10 | Database-level RLS (§5a): enabled as defense-in-depth in Phase 3, without changing which role `apps/api` connects as                | **Resolved in Phase 3** — RLS roles/policies exist and are tested directly; `apps/api`'s own connection is unaffected (still the schema owner, still bypasses RLS) |
 
 ### Provisional phase plan (Phase 2–15), for threat-mapping purposes only
 
@@ -582,4 +616,4 @@ No values are included below — names and purposes only, per `AUTH_RULES.md` ru
 6. **Missing information (D9)**: What are the real domain names for staging and production (web, admin, API)? Needed before OAuth callback URLs can be finalized.
 7. **Confirm the provisional phase plan** (§7) — renumber, rename, split, or merge as you prefer; threats were mapped to it only so every threat has an owning phase per this phase's "DONE WHEN" criteria.
 8. **Confirm scope of the existing implementation**: should Phase 2+ treat the current NestJS/Prisma auth code as the implementation to harden and extend (recommended, least churn), or should any part of it be discarded in favor of a different pattern?
-9. **Confirm D10**: is database-level row-level security (RLS) required as defense-in-depth, or is Prisma-layer-only access control (as implemented today) acceptable for this project's threat model?
+9. **Resolved (D10)**: RLS was enabled in Phase 3 as defense-in-depth (§5a) — no further confirmation needed. **New, carried-forward open question**: should a future phase actually wire `app.current_user_id` into Prisma's connection (e.g. via a NestJS interceptor doing `SET LOCAL` per request), making RLS the _real_ enforcement layer rather than a dormant, independently-tested-only one? Not assumed in scope unless confirmed.
