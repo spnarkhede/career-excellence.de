@@ -42,7 +42,11 @@ function MagicLinkContent() {
     if (!token) return;
     setPhase("verifying");
     try {
-      await apiClient.post("/auth/magic-link/verify", { token });
+      await apiClient.post(
+        "/auth/magic-link/verify",
+        { token },
+        { treatUnauthorizedAsOrdinaryError: true },
+      );
       setPhase("done");
     } catch {
       setPhase("error");

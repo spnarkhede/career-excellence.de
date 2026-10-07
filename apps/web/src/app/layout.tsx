@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 import "../lib/env";
 import { CookieConsentBanner } from "../components/cookie-consent-banner";
+import { AuthProvider } from "../components/auth-provider";
+import { getServerSession } from "../lib/session";
 
 export const metadata: Metadata = {
   title: { default: "App Platform", template: "%s | App Platform" },
@@ -9,12 +11,18 @@ export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"),
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Phase 11 task 1: resolved here, on the server, so every page's first
+  // paint already carries the real auth state — see
+  // apps/web/src/lib/session.ts and apps/web/src/components/auth-provider.tsx.
+  const initialPrincipal = await getServerSession();
   return (
     <html lang="en">
       <body>
-        {children}
-        <CookieConsentBanner />
+        <AuthProvider initialPrincipal={initialPrincipal}>
+          {children}
+          <CookieConsentBanner />
+        </AuthProvider>
       </body>
     </html>
   );

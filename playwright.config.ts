@@ -21,5 +21,13 @@ export default defineConfig({
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    // apps/web's env validation (apps/web/src/lib/env.ts) throws at startup
+    // without these — Phase 11's UI tests mock every API call at the
+    // network layer (page.route), so the API doesn't need to actually be
+    // reachable at this URL, only configured as a syntactically valid one.
+    env: {
+      NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+      NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000",
+    },
   },
 });

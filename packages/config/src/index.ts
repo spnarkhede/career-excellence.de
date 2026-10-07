@@ -2,9 +2,9 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
-import { assertNoPublicSecretLeakage } from "./guard.js";
+import { assertNoPublicSecretLeakage } from "./guard";
 
-export { assertNoPublicSecretLeakage } from "./guard.js";
+export { assertNoPublicSecretLeakage } from "./guard";
 
 // Next.js auto-loads .env files; plain Node entrypoints (apps/api, apps/worker) need this.
 const repoRoot = path.resolve(fileURLToPath(import.meta.url), "../../../..");

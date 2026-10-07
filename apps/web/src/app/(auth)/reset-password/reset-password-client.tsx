@@ -1,10 +1,10 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-import { Button, FormError, Input, Label } from "@saas/ui";
+import { Button, ErrorSummary, FormError, Label, PasswordInput } from "@saas/ui";
 import { isAllowedRedirect } from "@saas/security";
 import { resetPasswordSchema, type ResetPasswordInput } from "@saas/validation";
 import { ApiClientError } from "@saas/api-client";
@@ -35,6 +35,10 @@ function ResetPasswordForm() {
   const [missingToken, setMissingToken] = useState(false);
   const [tokenError, setTokenError] = useState<TokenErrorCode | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  // Checklist "double submission" — same ref-guard pattern as every other
+  // form in this app; this form was previously missing it.
+  const submitLock = useRef(false);
+  const errorSummaryRef = useRef<HTMLDivElement>(null);
   const {
     register,
     handleSubmit,
@@ -42,6 +46,16 @@ function ResetPasswordForm() {
   } = useForm<Omit<ResetPasswordInput, "token">>({
     resolver: zodResolver(resetPasswordSchema.omit({ token: true })),
   });
+
+  const summaryItems = [
+    ...(formError ? [{ id: "reset-password-form-error", message: formError }] : []),
+    ...(errors.password ? [{ id: "password", message: errors.password.message! }] : []),
+  ];
+
+  useEffect(() => {
+    if (summaryItems.length > 0) errorSummaryRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formError, errors.password]);
 
   // Capture the token on mount, then strip it from the visible address bar —
   // same pattern as verify-email/magic-link (checklist task 3: "token removed
@@ -59,7 +73,8 @@ function ResetPasswordForm() {
   }, [searchParams]);
 
   const onSubmit = async (values: Omit<ResetPasswordInput, "token">) => {
-    if (!token) return;
+    if (!token || submitLock.current) return;
+    submitLock.current = true;
     setFormError(null);
     setTokenError(null);
     try {
@@ -71,6 +86,8 @@ function ResetPasswordForm() {
         return;
       }
       setFormError(err instanceof ApiClientError ? err.body.message : "Something went wrong.");
+    } finally {
+      submitLock.current = false;
     }
   };
 
@@ -107,17 +124,16 @@ function ResetPasswordForm() {
   }
 
   return (
-    <form onSubmit={(e) => void handleSubmit(onSubmit)(e)} className="flex flex-col gap-4">
+    <form
+      onSubmit={(e) => void handleSubmit(onSubmit)(e)}
+      className="flex flex-col gap-4"
+      noValidate
+    >
       <h1 className="text-2xl font-semibold">Set a new password</h1>
-      <FormError message={formError ?? undefined} />
+      <ErrorSummary ref={errorSummaryRef} items={summaryItems} />
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="password">New password</Label>
-        <Input
-          id="password"
-          type="password"
-          autoComplete="new-password"
-          {...register("password")}
-        />
+        <PasswordInput id="password" autoComplete="new-password" {...register("password")} />
         <FormError message={errors.password?.message} />
       </div>
       <Button type="submit" disabled={isSubmitting || !token}>

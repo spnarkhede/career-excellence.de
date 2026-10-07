@@ -2,10 +2,11 @@
 
 import { useEffect, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button, FormError, Input, Label } from "@saas/ui";
+import { Button, ErrorSummary, Input, Label } from "@saas/ui";
 import { isAllowedRedirect } from "@saas/security";
 import { ApiClientError, ApiClientOfflineError, ApiClientTimeoutError } from "@saas/api-client";
 import { apiClient } from "../../../lib/api-client";
+import { useAuth } from "../../../components/auth-provider";
 
 const DEFAULT_REDIRECT = "/dashboard";
 // Matches the backend's cooldown (AuthService.OTP_RESEND_COOLDOWN_MS); shown so the
@@ -23,6 +24,7 @@ function resolveRedirectTarget(searchParams: URLSearchParams): string {
 function OtpForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const auth = useAuth();
   const [step, setStep] = useState<"request" | "verify">("request");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -31,6 +33,15 @@ function OtpForm() {
   const [cooldown, setCooldown] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitLock = useRef(false);
+  const errorSummaryRef = useRef<HTMLDivElement>(null);
+  const summaryItems = formError
+    ? [{ id: step === "request" ? "email" : "otp-code", message: formError }]
+    : [];
+
+  useEffect(() => {
+    if (summaryItems.length > 0) errorSummaryRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formError]);
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -80,7 +91,12 @@ function OtpForm() {
     setIsSubmitting(true);
     setFormError(null);
     try {
-      await apiClient.post("/auth/otp/verify", { email, code });
+      await apiClient.post(
+        "/auth/otp/verify",
+        { email, code },
+        { treatUnauthorizedAsOrdinaryError: true },
+      );
+      await auth.notifyLoggedIn();
       router.push(resolveRedirectTarget(searchParams));
     } catch (err) {
       setFormError(describeError(err));
@@ -99,9 +115,9 @@ function OtpForm() {
 
   if (step === "request") {
     return (
-      <form onSubmit={(e) => void requestCode(e)} className="flex flex-col gap-4">
+      <form onSubmit={(e) => void requestCode(e)} className="flex flex-col gap-4" noValidate>
         <h1 className="text-2xl font-semibold">Sign in with a code</h1>
-        <FormError message={formError ?? undefined} />
+        <ErrorSummary ref={errorSummaryRef} items={summaryItems} />
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="email">Email</Label>
           <Input
@@ -121,10 +137,10 @@ function OtpForm() {
   }
 
   return (
-    <form onSubmit={(e) => void verifyCode(e)} className="flex flex-col gap-4">
+    <form onSubmit={(e) => void verifyCode(e)} className="flex flex-col gap-4" noValidate>
       <h1 className="text-2xl font-semibold">Enter your code</h1>
       <p className="text-muted-foreground text-sm">We sent a 6-digit code to {email}.</p>
-      <FormError message={formError ?? undefined} />
+      <ErrorSummary ref={errorSummaryRef} items={summaryItems} />
       {requestMessage && !formError && (
         <p className="text-muted-foreground text-sm">{requestMessage}</p>
       )}

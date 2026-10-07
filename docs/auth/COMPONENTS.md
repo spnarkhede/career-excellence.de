@@ -1306,6 +1306,51 @@ message}` result; the page renders a retry UI on `"error"` rather than
    routes): deliberately removed `@UseGuards` from `ProfileController`,
    confirmed the suite failed, reverted, confirmed 84/84 passed again.
 
+### `AuthProvider` / `useAuth()` (`apps/web/src/components/auth-provider.tsx`) — Implemented (Phase 11)
+
+1. React context exposing `{status: "loading"|"authenticated"|"unauthenticated"|"error", principal, refresh, notifyLoggedIn, logout, registerClearOnLogout}`. Initialized from a server-resolved `initialPrincipal` (checklist task 1: "resolve the session on the server... to prevent a flash of protected content and a flash of the login page") — `status` is NEVER `"loading"` on first render, since the server already knows the answer by the time this component mounts.
+2. Wraps every page via `apps/web/src/app/layout.tsx` (the root layout), which `await`s `getServerSession()` before rendering.
+3. Calls `GET /auth/me` (via `refresh()`), `POST /auth/logout` (via `logout()`), and the cross-tab broadcast helpers (`broadcastLogin`/`broadcastLogout`/`onLoginBroadcast`/`onLogoutBroadcast`) from `@saas/api-client`.
+4. Receives the server-resolved principal as a prop; never reads anything client-supplied as the SOURCE of truth for roles/permissions.
+5. Returns the context value described in point 1.
+6. On failure: a failed `/auth/me` (any status, not just 401) sets `status: "unauthenticated"`, never a partially-stale authenticated state; a failed `/auth/logout` request still clears local state unconditionally (see FINDINGS.md-style reasoning in the code comment — staying on a page the server no longer recognizes a session for is worse than a client state briefly ahead of the server's).
+7. Secure: never trusts a client-supplied principal — `initialPrincipal` itself comes from a server-side fetch to the real API (`apps/web/src/lib/session.ts`), and every subsequent update comes from a fresh `/auth/me` call, never from e.g. decoding a cookie client-side.
+8. **Session generation counter** (checklist task 2): a ref incremented on every login/logout/user change; any in-flight `/auth/me` response checks the generation it started under and is dropped if stale (the user logged out, or a different user logged in, before it arrived) — paired with an `AbortController` that's also aborted on generation bump, so the stale request is cancelled outright, not just ignored. **Cross-tab sync** (checklist task 3): subscribes to `onLogoutBroadcast`/`onLoginBroadcast` so another tab's login/logout is reflected here too. **Cache clearing** (checklist task 3): `registerClearOnLogout(fn)` lets any component (e.g. `SessionsClient`, `ConnectedAccountsClient`) register a callback that runs on ANY logout (this tab's or another's), so a sign-back-in as a different user never shows a stale previous list.
+
+### `getServerSession()` (`apps/web/src/lib/session.ts`) — Implemented (Phase 11)
+
+1. Server-only, non-redirecting `/auth/me` resolver — unlike `requireUser()` (Phase 10), this NEVER redirects and never throws; it reports `AuthenticatedPrincipal | null` so the root layout (which renders for EVERY page, including public ones) can seed `AuthProvider`'s initial state without making an authorization decision itself.
+2. Called once per request, from `apps/web/src/app/layout.tsx`.
+3. Calls `GET {NEXT_PUBLIC_API_URL}/auth/me` with the forwarded request's cookies.
+4. Receives the incoming request's cookies (via `next/headers`' `cookies()`).
+5. Returns `AuthenticatedPrincipal | null`.
+6. On failure (network error, non-ok response, malformed body): returns `null` — treated as "unauthenticated," never as an error state, since a public page must still render.
+7. Secure: produces UI state only, never an authorization decision — "never rely solely on frontend route protection for security" (checklist item 26 / AUTH_RULES.md rule 6) stays true because every actual protected route still goes through `requireUser()`/`requirePermission()` independently.
+8. No inconsistent-state risk — a fresh fetch on every request, no caching (`cache: "no-store"`).
+
+### Password visibility toggle / error summary (`packages/ui/src/components/{password-input,error-summary}.tsx`) — Implemented (Phase 11)
+
+1. `PasswordInput`: toggles the SAME `<input>` DOM node's `type` between `password`/`text` (never remounts it, so the browser preserves the current value and cursor position across the toggle with no manual bookkeeping) — checklist task 4.2. The toggle button is `type="button"` (never submits the form) with `aria-pressed` reflecting its state and a label that changes with it ("Show password" / "Hide password").
+   `ErrorSummary`: `role="alert"` + `aria-live="assertive"` + `tabIndex={-1}`, rendered once per form and focused (via its forwarded ref) immediately after a failed submit — checklist task 4.4 ("errors in an aria-live region, focus moved to an error summary").
+2. Used by the login, signup, forgot-password, otp, and reset-password forms (`apps/web/src/app/(auth)/**`).
+3. Calls nothing — pure presentational components.
+4. `PasswordInput` receives the same props as a native `<input>` (forwarded via `React.forwardRef`, so `react-hook-form`'s `register()` spread works unchanged). `ErrorSummary` receives `items: {id, message}[]`.
+5. Returns rendered markup.
+6. N/A — no failure mode of their own.
+7. Secure: `PasswordInput`'s "Show" state is purely a `type` attribute toggle — the value itself is never logged, sent anywhere, or exposed beyond what the native `<input type="text">` already shows visually.
+8. No inconsistent-state risk — fully controlled by the parent form's own state.
+
+### Form hardening across login/signup/otp/forgot-password/reset-password/verify-email — Implemented (Phase 11)
+
+1. Every one of the six forms named in the checklist now has: a `submitLock` ref guard against a double submit (checklist task 4.3) — previously missing on `forgot-password`, `signup`, `reset-password`, and the `verify-email` confirm/resend actions; an `ErrorSummary` (or, for `verify-email`'s neutral resend confirmation and `otp`'s single-message case, a plain `FormError`/role-appropriate live region) wired to receive focus on a new error (checklist task 4.4); `autoComplete` fixed where missing (`forgot-password`'s email field had none at all); `noValidate` added to forms using the `ErrorSummary` pattern so the browser's own native validation bubble never races with React's.
+2. Rendered as the respective `apps/web/src/app/(auth)/**/page.tsx` / `*-client.tsx` files.
+3. Calls the respective `/auth/*` endpoints — unchanged from prior phases.
+4. Receives user input via the same `react-hook-form`/plain-`useState` patterns each form already used.
+5. Returns rendered forms; on success, each form either navigates away or switches to a distinct confirmation view (never a silent no-op).
+6. On failure: each form's existing per-field/per-form error display is preserved; the new `ErrorSummary` is additive, not a replacement for the inline `FormError` next to each field.
+7. Secure: no change to any request/response handling — purely presentation and resilience hardening.
+8. `login`'s own pre-Phase-11 `/auth/me` polling `useEffect` was REMOVED entirely — it now reads `useAuth().status` from the server-resolved `AuthProvider` instead, which is what eliminates the login-page loading flash (checklist items 24/25) rather than just hiding it faster.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

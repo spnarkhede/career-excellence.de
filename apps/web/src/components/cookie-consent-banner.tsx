@@ -40,7 +40,16 @@ export function CookieConsentBanner() {
   if (!visible) return null;
 
   return (
-    <div className="border-border bg-background fixed inset-x-0 bottom-0 z-50 border-t p-4 shadow-lg">
+    // BUG (found and fixed this phase, via axe): this banner rendered as a
+    // bare <div>, outside any landmark region — axe's "region" rule flags
+    // any page content not contained by one. A <dialog>/<section> with a
+    // role wouldn't help here (this isn't modal and doesn't own a heading),
+    // so a plain `role="region"` + `aria-label` is the minimal fix.
+    <div
+      role="region"
+      aria-label="Cookie consent"
+      className="border-border bg-background fixed inset-x-0 bottom-0 z-50 border-t p-4 shadow-lg"
+    >
       <div className="mx-auto flex max-w-3xl flex-col items-center gap-3 sm:flex-row sm:justify-between">
         <p className="text-muted-foreground text-sm">
           We use cookies for essential functionality and, with your consent, analytics.

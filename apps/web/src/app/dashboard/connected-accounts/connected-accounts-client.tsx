@@ -5,6 +5,7 @@ import { Button, FormError } from "@saas/ui";
 import { ApiClientError } from "@saas/api-client";
 import { apiClient } from "../../../lib/api-client";
 import { OAuthButtons } from "../../../components/oauth-buttons";
+import { useAuth } from "../../../components/auth-provider";
 
 interface LinkedAccount {
   id: string;
@@ -18,9 +19,15 @@ interface LinkedAccount {
  * per-row unlink button; "Continue with X" buttons below (mode="link") start
  * the linking flow for providers not yet connected. */
 export function ConnectedAccountsClient() {
+  const auth = useAuth();
   const [accounts, setAccounts] = useState<LinkedAccount[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unlinkingProvider, setUnlinkingProvider] = useState<string | null>(null);
+
+  // Checklist "logout clears every client cache" — see sessions-client.tsx.
+  useEffect(() => {
+    return auth.registerClearOnLogout(() => setAccounts(null));
+  }, [auth]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -56,7 +63,9 @@ export function ConnectedAccountsClient() {
       <FormError message={error ?? undefined} />
 
       {accounts === null ? (
-        <p className="text-muted-foreground">Loading…</p>
+        <p className="text-muted-foreground" role="status" aria-label="Loading connected accounts">
+          Loading…
+        </p>
       ) : accounts.length === 0 ? (
         <p className="text-muted-foreground">No providers linked yet.</p>
       ) : (

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button, FormError } from "@saas/ui";
 import { ApiClientError } from "@saas/api-client";
 import { apiClient } from "../../../lib/api-client";
+import { useAuth } from "../../../components/auth-provider";
 
 interface SessionRow {
   id: string;
@@ -18,10 +19,18 @@ interface SessionRow {
  * the Phase 5 GET /auth/sessions endpoint, now returning only the fields a user
  * should see (never a refresh-token hash or internal rotation pointer). */
 export function SessionsClient() {
+  const auth = useAuth();
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [revokingOthers, setRevokingOthers] = useState(false);
+
+  // Checklist "logout clears every client cache": if the user logs out and
+  // back in as someone else without a full page reload, this list must not
+  // keep showing the PREVIOUS user's sessions for even a moment.
+  useEffect(() => {
+    return auth.registerClearOnLogout(() => setSessions(null));
+  }, [auth]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -64,7 +73,11 @@ export function SessionsClient() {
   }
 
   if (!sessions && !error) {
-    return <p className="text-muted-foreground">Loading sessions…</p>;
+    return (
+      <p className="text-muted-foreground" role="status" aria-label="Loading sessions">
+        Loading sessions…
+      </p>
+    );
   }
 
   return (

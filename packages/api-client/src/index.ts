@@ -19,6 +19,19 @@ export class ApiClientTimeoutError extends Error {
   }
 }
 
+/** Thrown when a request is aborted via an externally-supplied `signal` (as opposed
+ * to this client's own internal timeout) — distinct from `ApiClientTimeoutError` so
+ * a caller that intentionally cancelled a stale request (Phase 11's "session
+ * generation" guard: drop a /auth/me response that arrives after logout or a user
+ * change) can tell "I cancelled this on purpose" apart from "the network was slow,"
+ * and silently ignore the former rather than surfacing it as an error. */
+export class ApiClientAbortedError extends Error {
+  constructor() {
+    super("The request was cancelled.");
+    this.name = "ApiClientAbortedError";
+  }
+}
+
 /** Thrown when the browser reports itself offline before a request is even attempted
  * (checklist "Offline mode") — avoids waiting for a fetch to fail/time out when we
  * already know it will. */
@@ -49,6 +62,22 @@ export interface RequestOptions extends RequestInit {
    * own 401 (if the refreshed session is somehow still rejected) doesn't trigger
    * a second refresh-and-retry loop. */
   __isRetry?: boolean;
+  /**
+   * Phase 11 (BUG-024): some endpoints legitimately return 401 for a reason that
+   * has NOTHING to do with session validity — wrong login password, wrong OTP
+   * code, an expired/used magic link, a wrong "current password" on change —
+   * because this codebase reuses 401 for "the credential you just submitted is
+   * wrong," not only "your session is invalid." Without this flag, EVERY such
+   * 401 triggered a refresh-token attempt and then a hard redirect to
+   * `/login?reason=session_expired` via `onUnauthorized`, overwriting whatever
+   * in-place error message the calling page was about to show — caught by this
+   * phase's own Playwright test ("login error summary receives focus"), which
+   * found the error summary never appeared because the page had already
+   * navigated away. Pass `true` for any call where a 401 is an ordinary,
+   * expected possible outcome of the credential being wrong, not a sign the
+   * caller's existing session died.
+   */
+  treatUnauthorizedAsOrdinaryError?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -70,15 +99,15 @@ function readCookie(names: string[]): string | null {
 
 const LOGOUT_BROADCAST_CHANNEL = "auth-logout";
 const LOGOUT_STORAGE_KEY = "auth-logout-ping";
+const LOGIN_BROADCAST_CHANNEL = "auth-login";
+const LOGIN_STORAGE_KEY = "auth-login-ping";
 
-/** Notifies every other open tab/window that the user just logged out, so they can
- * clear their own in-memory auth state and redirect to login too (checklist
- * "notify other tabs with BroadcastChannel, storage event fallback"). Call this
- * right after a successful logout request. Best-effort: a browser that blocks
- * both BroadcastChannel and localStorage (e.g. some private-mode configurations)
- * just won't propagate — the tab that actually called logout is unaffected either
- * way, since it updates its own state directly. */
-export function broadcastLogout(): void {
+/** Posts a best-effort cross-tab broadcast on `channelName` (BroadcastChannel,
+ * falling back to a `localStorage` ping on `storageKey` when BroadcastChannel
+ * is unavailable). A browser that blocks both (e.g. some private-mode
+ * configurations) just won't propagate — the tab that originated the event is
+ * unaffected either way, since it updates its own state directly. */
+function broadcast(channelName: string, storageKey: string): void {
   const g = globalThis as {
     BroadcastChannel?: new (name: string) => {
       postMessage: (m: unknown) => void;
@@ -88,8 +117,8 @@ export function broadcastLogout(): void {
   };
   try {
     if (g.BroadcastChannel) {
-      const channel = new g.BroadcastChannel(LOGOUT_BROADCAST_CHANNEL);
-      channel.postMessage("logout");
+      const channel = new g.BroadcastChannel(channelName);
+      channel.postMessage(channelName);
       channel.close();
       return;
     }
@@ -97,16 +126,17 @@ export function broadcastLogout(): void {
     // fall through to the storage-event fallback below
   }
   try {
-    g.localStorage?.setItem(LOGOUT_STORAGE_KEY, String(Date.now()));
+    g.localStorage?.setItem(storageKey, String(Date.now()));
   } catch {
-    // localStorage can throw in some private-mode configurations — cross-tab sync
-    // is best-effort, never load-bearing for the tab that called logout itself.
+    // localStorage can throw in some private-mode configurations — cross-tab
+    // sync is best-effort, never load-bearing for the originating tab.
   }
 }
 
-/** Subscribes to logout broadcasts from other tabs. Returns an unsubscribe
- * function. Safe to call in a non-browser environment (no-op subscription). */
-export function onLogoutBroadcast(callback: () => void): () => void {
+/** Subscribes to broadcasts on `channelName`/`storageKey`. Returns an
+ * unsubscribe function. Safe to call in a non-browser environment (no-op
+ * subscription). */
+function onBroadcast(channelName: string, storageKey: string, callback: () => void): () => void {
   const g = globalThis as {
     BroadcastChannel?: new (name: string) => {
       onmessage: ((event: unknown) => void) | null;
@@ -119,7 +149,7 @@ export function onLogoutBroadcast(callback: () => void): () => void {
   let channel: { close: () => void } | undefined;
   try {
     if (g.BroadcastChannel) {
-      const bc = new g.BroadcastChannel(LOGOUT_BROADCAST_CHANNEL);
+      const bc = new g.BroadcastChannel(channelName);
       bc.onmessage = () => callback();
       channel = bc;
     }
@@ -128,7 +158,7 @@ export function onLogoutBroadcast(callback: () => void): () => void {
   }
 
   const storageListener = (event: { key?: string }) => {
-    if (event.key === LOGOUT_STORAGE_KEY) callback();
+    if (event.key === storageKey) callback();
   };
   try {
     g.addEventListener?.("storage", storageListener);
@@ -144,6 +174,34 @@ export function onLogoutBroadcast(callback: () => void): () => void {
       // ignore
     }
   };
+}
+
+/** Notifies every other open tab/window that the user just logged out, so they can
+ * clear their own in-memory auth state and redirect to login too (checklist
+ * "notify other tabs with BroadcastChannel, storage event fallback"). Call this
+ * right after a successful logout request. */
+export function broadcastLogout(): void {
+  broadcast(LOGOUT_BROADCAST_CHANNEL, LOGOUT_STORAGE_KEY);
+}
+
+/** Subscribes to logout broadcasts from other tabs. */
+export function onLogoutBroadcast(callback: () => void): () => void {
+  return onBroadcast(LOGOUT_BROADCAST_CHANNEL, LOGOUT_STORAGE_KEY, callback);
+}
+
+/** Phase 11 checklist "cross-tab sync for login": notifies every other open
+ * tab/window that the user just logged in (in THIS tab), so they re-fetch the
+ * session and drop out of whatever unauthenticated state they were showing
+ * (e.g. a login form left open in a second tab) instead of staying stale
+ * until their own next navigation. Call this right after a successful login
+ * or OTP/magic-link verification. */
+export function broadcastLogin(): void {
+  broadcast(LOGIN_BROADCAST_CHANNEL, LOGIN_STORAGE_KEY);
+}
+
+/** Subscribes to login broadcasts from other tabs. */
+export function onLoginBroadcast(callback: () => void): () => void {
+  return onBroadcast(LOGIN_BROADCAST_CHANNEL, LOGIN_STORAGE_KEY, callback);
 }
 
 /**
@@ -199,6 +257,25 @@ export function createApiClient({
     const effectiveTimeout = init.timeoutMs ?? timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const timer = setTimeout(() => controller.abort(), effectiveTimeout);
 
+    // An external signal (e.g. a caller cancelling a stale /auth/me fetch after
+    // logout or a user-change — Phase 11's "session generation" guard) aborts
+    // the SAME underlying fetch as the internal timeout, rather than being
+    // silently dropped by the `signal: controller.signal` override below.
+    const externalSignal = init.signal;
+    let externallyAborted = externalSignal?.aborted ?? false;
+    if (externalSignal) {
+      if (externallyAborted) controller.abort();
+      else
+        externalSignal.addEventListener(
+          "abort",
+          () => {
+            externallyAborted = true;
+            controller.abort();
+          },
+          { once: true },
+        );
+    }
+
     const method = (init.method ?? "GET").toUpperCase();
     const csrfToken = STATE_CHANGING_METHODS.has(method) ? readCookie(csrfCookieNames) : null;
 
@@ -216,14 +293,14 @@ export function createApiClient({
       });
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
-        throw new ApiClientTimeoutError();
+        throw externallyAborted ? new ApiClientAbortedError() : new ApiClientTimeoutError();
       }
       throw err;
     } finally {
       clearTimeout(timer);
     }
 
-    if (response.status === 401) {
+    if (response.status === 401 && !init.treatUnauthorizedAsOrdinaryError) {
       const isRefreshEndpoint = path === "/auth/refresh";
       if (!isRefreshEndpoint && !init.__isRetry) {
         const refreshed = await refreshOnce();

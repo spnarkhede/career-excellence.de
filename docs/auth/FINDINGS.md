@@ -912,6 +912,218 @@ pnpm test && pnpm db:check-consistency` against a real, disposable Postgres data
   the CODE path; the frontend message is unverified in an actual browser
   this session.
 
+### BUG-022: `.js`-suffixed relative imports (ESM NodeNext style) pointing at `.ts` sources failed to resolve under `next dev`, breaking the dev server for any page importing an affected package
+
+- **Label:** Confirmed bug
+- **Severity:** HIGH — `next dev` could not render ANY page that transitively
+  imports `packages/ui` or `packages/config` (which is every page, via the
+  root layout) at all; the dev server returned a 500 for every route. This
+  is exactly the kind of bug every prior phase's "no browser testing was
+  performed" caveat predicted might be hiding — it was invisible to
+  `pnpm build` (production) and to every unit/integration test (none of
+  which boot `next dev`), and was only surfaced by this phase's first real
+  attempt to run Playwright against the actual auth pages rather than only
+  the static homepage (Phase 2's one prior live browser test).
+- **Status:** Fixed, confirmed via a real `next dev` + Playwright run
+- **Component/file:** `packages/ui/src/index.ts`, `packages/ui/src/components/password-input.tsx`,
+  `packages/config/src/index.ts` (the files actually reachable from
+  apps/web's import graph; 13 more files in `packages/auth` and
+  `packages/database` have the same pattern but are never imported by
+  apps/web — see Related components).
+- **Exact location:** `packages/ui/src/index.ts` lines 1-5 (`export * from
+"./lib/utils.js"` etc.), `packages/config/src/index.ts` lines 5 and 7
+  (`import {...} from "./guard.js"`).
+- **Problem:** These files use the ESM NodeNext convention of writing a
+  relative import's compiled-output extension (`.js`) even though the
+  source file is `.ts` — valid and necessary when running directly under
+  Node's ESM loader (as `apps/api`/`apps/worker`, via `tsx`, do), but
+  `next dev`'s webpack configuration in this Next.js version does not apply
+  the same `.js` -> `.ts`/`.tsx` extension-alias resolution these files
+  need, so every such import fails to resolve — even though `next build`'s
+  production webpack config (used in `pnpm build`) apparently handles it
+  without issue, which is why every prior phase's successful `pnpm build`
+  run never caught this.
+- **Root cause:** A resolver behavior difference between `next dev` and
+  `next build`'s webpack configurations for `.js`-extension specifiers
+  resolving to `.ts`/`.tsx` sources in a `transpilePackages` workspace
+  package — exactly the kind of environment-specific gap "confirmed by a
+  passing build" can hide, which is why AUTH_RULES.md rule 12 calls for
+  re-running the actual flow, not just a build.
+- **Trigger:** Running `next dev` (directly, or via Playwright's
+  `webServer`) and loading any page whose import graph reaches
+  `packages/ui` or `packages/config` — which, via the root layout's
+  `CookieConsentBanner` (`@saas/ui`) and `apps/web/src/lib/env.ts`
+  (`@saas/config`), is every single page in apps/web.
+- **Impact:** `next dev` was completely unusable for local development of
+  apps/web the moment either of these two files existed in this exact
+  shape — every route returned a 500. Production (`next build` + `next
+start`) was unaffected, which is specifically why this went undetected
+  through every prior phase's verification (`pnpm build` was always run
+  and always passed).
+- **Reproduction steps:**
+  1. Run `pnpm --filter @saas/web dev`. 2. Visit any route (e.g. `/`,
+     `/login`). 3. Observe a 500 with "Module not found: Can't resolve
+     './lib/utils.js'" (or `'./guard.js'`) in the server console.
+- **Expected behavior:** `next dev` renders the page.
+- **Actual behavior (before fix):** 500 on every route.
+- **Why it happens:** See root cause.
+- **Related components:** 13 more files use the identical `.js`-pointing-
+  at-`.ts` pattern (`packages/auth/src/{index,stub-provider,oauth/*}.ts`,
+  `packages/database/src/index.ts`, `packages/database/prisma/seed.ts`,
+  `packages/observability/src/index.ts`) — NONE of these are in apps/web's
+  `next.config.mjs` `transpilePackages` list and none are imported by
+  apps/web (they're apps/api/apps/worker-only, run via `tsx`/Node's own ESM
+  loader, which DOES resolve `.js`->`.ts` correctly), so they do not
+  reproduce this bug today. Flagged here as a **Potential risk**: if any of
+  those packages is ever added to `transpilePackages` or imported from
+  apps/web/apps/admin in the future, the same class of failure will
+  recur — worth fixing opportunistically rather than only reactively.
+- **Recommended fix (applied):** Removed the `.js` extension from every
+  reachable-from-apps/web relative import/export in
+  `packages/ui/src/index.ts`, `packages/ui/src/components/password-input.tsx`,
+  and `packages/config/src/index.ts`, matching the extension-less
+  convention `packages/ui/src/components/button.tsx` and `form.tsx` already
+  used for their OWN relative imports (an inconsistency that existed before
+  this phase, in files this phase did not otherwise need to touch — fixed
+  only in the two files Phase 11 actually added imports to and the
+  pre-existing file blocking the dev server, not refactored repo-wide).
+- **Regression risk:** None under `next build`/Node ESM (extension-less
+  relative specifiers resolve identically there); only improves `next dev`.
+- **How to test the fix:** `pnpm exec playwright test tests/e2e/auth-ui.spec.ts`
+  — actually run against a live `next dev` server this phase; see
+  PROGRESS.md for the full pass/fail breakdown.
+
+### BUG-023: the cookie-consent banner rendered outside any landmark region, failing axe's "region" rule on every page
+
+- **Label:** Confirmed bug
+- **Severity:** LOW — a real, axe-confirmed accessibility violation (moderate
+  impact per axe's own classification) on every single page in apps/web
+  (the banner is rendered from the root layout), but not security-relevant
+  and not blocking for a sighted user; downgraded from axe's "moderate" to
+  this project's LOW per AUTH_RULES.md rule 11 ("do not artificially
+  inflate severity") since no functionality is actually broken.
+- **Status:** Fixed, confirmed via a real axe scan (`@axe-core/playwright`)
+  against a live page
+- **Component/file:** `apps/web/src/components/cookie-consent-banner.tsx`
+- **Exact location:** The banner's outer `<div>` (no landmark role, no
+  `aria-label`), rendered directly under `<body>` by the root layout,
+  outside the `(auth)` layout's `<main>` wrapper (which only wraps the
+  specific route group's own content, not this banner).
+- **Problem:** axe's "region" rule requires all page content to be
+  contained within a landmark (`<main>`, `<nav>`, `<header>`, `<footer>`,
+  or an explicit `role`) so screen reader users navigating by landmark can
+  discover it; this banner's text and buttons were in none.
+- **Root cause:** The banner was written as a plain `<div>` with no
+  consideration for landmark structure, and — being fixed-positioned and
+  rendered from the ROOT layout rather than inside any page's own `<main>`
+  — there was no existing landmark it happened to fall inside of either.
+- **Trigger:** Any page render where the banner is visible (no stored
+  consent, or a stale `consentVersion`) — i.e. every first-time visitor to
+  any page.
+- **Impact:** A screen reader user navigating by landmark would never
+  discover the cookie consent banner exists at all.
+- **Reproduction steps:**
+  1. Clear `localStorage`. 2. Load any page. 3. Run an axe scan. 4. Observe
+     the "region" violation targeting `.max-w-3xl > p` inside the banner.
+- **Expected behavior:** Zero axe violations.
+- **Actual behavior (before fix):** One "region" violation (moderate impact)
+  on every page.
+- **Why it happens:** See root cause.
+- **Related components:** None — self-contained to this one component.
+- **Recommended fix (applied):** Added `role="region"` and
+  `aria-label="Cookie consent"` to the banner's outer `<div>`.
+- **Regression risk:** None — adds an ARIA role/label only, no layout or
+  behavior change.
+- **How to test the fix:** `tests/e2e/auth-ui.spec.ts`'s axe scans (login,
+  signup, forgot-password, reset-password, verify-email) — actually run,
+  all clean after this fix; see PROGRESS.md.
+
+### BUG-024: a wrong password/OTP code/expired magic link returned HTTP 401, which the API client misread as "session expired" and hard-redirected away from the error
+
+- **Label:** Confirmed bug
+- **Severity:** HIGH — every wrong-password login attempt, wrong OTP
+  code, and expired/used magic link silently redirected the user to
+  `/login?reason=session_expired` instead of showing the actual "incorrect
+  email or password" / "invalid or expired code" message — a confirmed,
+  reproducible, user-facing correctness bug on three of this app's most
+  common failure paths, caught by this phase's own Playwright test
+  ("login error summary receives focus and announces via role=alert"),
+  which found the error summary never rendered because the page had
+  already navigated away by the time the assertion ran.
+- **Status:** Fixed, confirmed via a real Playwright run against a live
+  `next dev` server (12/12 non-skipped tests passing after the fix, versus
+  this one test failing before it)
+- **Component/file:** `packages/api-client/src/index.ts` (`request()`'s
+  401-handling branch); call sites in `apps/web/src/app/(auth)/login/page.tsx`,
+  `apps/web/src/app/(auth)/otp/otp-client.tsx`,
+  `apps/web/src/app/(auth)/magic-link/magic-link-client.tsx`
+- **Exact location:** `request()`'s `if (response.status === 401) {...}`
+  branch, which treated EVERY 401 response (except literally
+  `/auth/refresh` itself) as a signal to attempt a token refresh and then
+  call `onUnauthorized()` — which in `apps/web`'s wiring
+  (`apps/web/src/lib/api-client.ts`) does `window.location.href =
+"/login?reason=session_expired"`, a real browser navigation, started
+  BEFORE the function returns to the caller.
+- **Problem:** This codebase reuses HTTP 401 for two semantically different
+  things: "your existing session is no longer valid" (the case this
+  interceptor was designed for) AND "the credential you just submitted in
+  THIS request is wrong" (wrong login password — `auth.service.ts:455`;
+  wrong OTP code — lines 871/880/888/901; expired/used magic link — lines
+  958/961/972). The client-side interceptor could not tell these apart, so
+  it treated the second case as the first every time, firing a real
+  navigation that raced against — and won against — the calling page's own
+  attempt to show the actual error message in place.
+- **Root cause:** The 401-interceptor was written (Phase 7, session
+  lifecycle) with only the "stale session" case in mind — at the time, no
+  call site submitted a credential that could itself produce a 401. OTP/
+  magic-link verification and login predate and postdate that phase
+  without anyone re-examining whether their OWN 401s needed an exemption,
+  because the bug has no effect unless something actually exercises the
+  real browser redirect side-effect — which, per every prior phase's own
+  "no browser testing was performed" notes, nothing had, until this
+  phase's Playwright suite.
+- **Trigger:** Submitting a wrong password on `/login`, a wrong code on
+  `/otp`, or opening an expired/already-used magic link.
+- **Impact:** A user who mistypes their password never sees "incorrect
+  email or password" — they're bounced to a login page with a
+  "session_expired" banner instead, which is actively misleading (nothing
+  about their session expired) and could plausibly make them think their
+  ACCOUNT itself has a problem rather than that they simply mistyped their
+  password. Same for a wrong OTP code and an expired magic link.
+- **Reproduction steps:**
+  1. Go to `/login`. 2. Submit a wrong password. 3. Observe a redirect to
+     `/login?reason=session_expired` instead of an inline "Incorrect email
+     or password" message.
+- **Expected behavior:** A 401 from an endpoint where the submitted
+  credential itself was wrong should surface as an ordinary in-place error,
+  never trigger a refresh attempt or a forced navigation.
+- **Actual behavior (before fix):** Hard redirect to
+  `/login?reason=session_expired`, in-place error never shown.
+- **Why it happens:** See root cause.
+- **Related components:** `apps/web/src/app/dashboard/*-client.tsx`
+  (`/auth/sessions`, `/auth/oauth/accounts`) and every OTHER authenticated
+  call in the app correctly rely on the ORIGINAL behavior — this fix is
+  deliberately narrow (an explicit opt-in flag per call, not a change to
+  the default), so it does not weaken the real "session expired" handling
+  for the calls that actually need it. `POST /auth/change-password` has
+  the identical 401-for-wrong-credential shape (`auth.service.ts:793`) but
+  has no frontend call site yet (no change-password UI exists in apps/web)
+  — flagged as a **Potential risk** for whoever builds that UI: it must
+  pass the same `treatUnauthorizedAsOrdinaryError: true` flag, or this
+  exact bug recurs there.
+- **Recommended fix (applied):** Added a `treatUnauthorizedAsOrdinaryError`
+  per-request option to `packages/api-client`'s `RequestOptions`, which
+  skips the refresh-and-redirect branch entirely when set. Passed `true`
+  at the three real, currently-reachable call sites: `/auth/login`,
+  `/auth/otp/verify`, `/auth/magic-link/verify`.
+- **Regression risk:** Low — opt-in per call, defaults to the EXISTING
+  behavior everywhere else; only the three call sites that explicitly pass
+  the new flag change behavior.
+- **How to test the fix:** `tests/e2e/auth-ui.spec.ts`'s "login error
+  summary receives focus and announces via role=alert" test — actually
+  run, mocks `/auth/login` to return 401 and confirms the error renders
+  in place rather than the page navigating away.
+
 ### BUG-015: `ForbiddenError` fell through to the generic exception branch and returned HTTP 500 instead of 403
 
 - **Label:** Confirmed bug

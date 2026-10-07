@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-07
+
+### Added
+
+- Client-side `AuthProvider`/`useAuth()` (`apps/web/src/components/auth-provider.tsx`)
+  with explicit `loading`/`authenticated`/`unauthenticated`/`error` states,
+  seeded from a new server-resolved session helper
+  (`apps/web/src/lib/session.ts`) so first paint never shows a loading
+  flicker or a flash of protected content/the login page.
+- A session-generation counter + `AbortController` guard (`ApiClientAbortedError`
+  in `@saas/api-client`) that drops and cancels a stale `/auth/me` response
+  arriving after logout or a user change.
+- Cross-tab login sync (`broadcastLogin`/`onLoginBroadcast` in
+  `@saas/api-client`), mirroring the existing logout broadcast.
+- `PasswordInput` and `ErrorSummary` shared components (`@saas/ui`) — a
+  visibility toggle that preserves the typed value/cursor, and a focused,
+  `aria-live` error summary for every auth form.
+- `tests/e2e/auth-ui.spec.ts` (Playwright + `@axe-core/playwright`) — axe
+  scans on every public auth page, double-submit guard, button re-enable,
+  password-toggle, 360px viewport/16px-font, full keyboard navigation.
+
+### Changed
+
+- All six auth forms (login, signup, otp, forgot-password, reset-password,
+  verify-email) now have a double-submit guard where it was missing, use
+  the new `ErrorSummary`/`PasswordInput` components, and move focus to a
+  new error.
+- `apps/web/src/app/dashboard/dashboard-actions.tsx` now delegates logout
+  to `AuthProvider.logout()` instead of hand-rolling it.
+- `packages/ui`'s shared `Input`/`Label` font size raised to 16px.
+
+### Fixed
+
+- `BUG-022`: `.js`-suffixed relative imports in `packages/ui`/`packages/config`
+  failed to resolve under `next dev` (but not `next build`), returning a
+  500 on every route in apps/web.
+- `BUG-023`: the cookie-consent banner rendered outside any landmark
+  region, failing axe's "region" rule on every page.
+- `BUG-024`: a wrong login password/OTP code/expired magic link (HTTP 401
+  for a reason unrelated to session validity) was misread by the API
+  client as "session expired," hard-redirecting away before the real
+  error could render.
+- `forgot-password`'s missing `autoComplete="email"` and a dead
+  `<FormError />` with no `message` prop.
+
+### Notes
+
+- Most apps/web routes are now server-rendered on demand rather than
+  statically prerendered, since the root layout's session resolution makes
+  every page request-dependent — a deliberate tradeoff for correctness
+  (no stale auth state baked into a static page), not a regression.
+- No live Postgres or reachable API in this session: two e2e tests (cross-tab
+  logout, hard-refresh-no-flash) skip cleanly rather than being faked as
+  passing.
+
 ## [0.11.0] - 2026-10-07
 
 ### Added

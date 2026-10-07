@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-import { Button, FormError, Input, Label } from "@saas/ui";
+import { Button, ErrorSummary, FormError, Input, Label, PasswordInput } from "@saas/ui";
 import {
   estimatePasswordStrength,
   PASSWORD_MAX_LENGTH,
@@ -26,6 +26,11 @@ const STRENGTH_BAR_COLOR = [
 export default function SignUpPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
+  // Checklist "double submission": react-hook-form's `isSubmitting` already
+  // disables the button, but a ref closes the gap against a second click
+  // racing in before the first re-render (same pattern as login/otp).
+  const submitLock = useRef(false);
+  const errorSummaryRef = useRef<HTMLDivElement>(null);
   const {
     register,
     handleSubmit,
@@ -35,13 +40,32 @@ export default function SignUpPage() {
   const password = watch("password") ?? "";
   const strength = estimatePasswordStrength(password);
 
+  const summaryItems = [
+    ...(formError ? [{ id: "signup-form-error", message: formError }] : []),
+    ...(errors.email ? [{ id: "email", message: errors.email.message! }] : []),
+    ...(errors.password ? [{ id: "password", message: errors.password.message! }] : []),
+  ];
+
+  useEffect(() => {
+    if (summaryItems.length > 0) errorSummaryRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formError, errors.email, errors.password]);
+
   const onSubmit = async (values: SignUpInput) => {
+    if (submitLock.current) return;
+    submitLock.current = true;
     setFormError(null);
     try {
       await apiClient.post("/auth/signup", values);
+      // Reset only ever happens here, on SUCCESS (checklist "forms reset
+      // only after success, never wiping input on error") — switching to
+      // the "check your email" view makes the form unreachable anyway, but
+      // never clears field values on a failed submit above.
       setSubmitted(true);
     } catch (err) {
       setFormError(err instanceof ApiClientError ? err.body.message : "Something went wrong.");
+    } finally {
+      submitLock.current = false;
     }
   };
 
@@ -57,9 +81,13 @@ export default function SignUpPage() {
   }
 
   return (
-    <form onSubmit={(e) => void handleSubmit(onSubmit)(e)} className="flex flex-col gap-4">
+    <form
+      onSubmit={(e) => void handleSubmit(onSubmit)(e)}
+      className="flex flex-col gap-4"
+      noValidate
+    >
       <h1 className="text-2xl font-semibold">Create your account</h1>
-      <FormError message={formError ?? undefined} />
+      <ErrorSummary ref={errorSummaryRef} items={summaryItems} />
 
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="email">Email</Label>
@@ -69,12 +97,7 @@ export default function SignUpPage() {
 
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="password">Password</Label>
-        <Input
-          id="password"
-          type="password"
-          autoComplete="new-password"
-          {...register("password")}
-        />
+        <PasswordInput id="password" autoComplete="new-password" {...register("password")} />
         <p className="text-muted-foreground text-xs">
           {PASSWORD_MIN_LENGTH}–{PASSWORD_MAX_LENGTH} characters. Any characters allowed — no
           required mix of letters, numbers, or symbols.

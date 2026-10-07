@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Button, FormError, Input, Label } from "@saas/ui";
 import { isAllowedRedirect } from "@saas/security";
@@ -26,6 +26,12 @@ function VerifyEmailContent() {
   const [reason, setReason] = useState<VerifyReason | null>(null);
   const [resendEmail, setResendEmail] = useState("");
   const [resendMessage, setResendMessage] = useState<string | null>(null);
+  // Checklist "double submission": the confirm button already disables
+  // itself via `phase === "verifying"`, but a ref closes the gap against a
+  // second click racing in before that re-render — same pattern as the
+  // other forms in this app, previously missing here.
+  const confirmLock = useRef(false);
+  const resendLock = useRef(false);
 
   // Capture the token on mount, then immediately strip it from the visible address
   // bar — checklist item 5: "token removed from the address bar after load." The
@@ -44,7 +50,8 @@ function VerifyEmailContent() {
   }, [searchParams]);
 
   async function handleConfirm() {
-    if (!token) return;
+    if (!token || confirmLock.current) return;
+    confirmLock.current = true;
     setPhase("verifying");
     try {
       const res = await apiClient.post<{ reason: VerifyReason }>("/auth/verify-email", { token });
@@ -53,11 +60,15 @@ function VerifyEmailContent() {
     } catch {
       setReason("invalid");
       setPhase("done");
+    } finally {
+      confirmLock.current = false;
     }
   }
 
   async function handleResend(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (resendLock.current) return;
+    resendLock.current = true;
     setResendMessage(null);
     try {
       await apiClient.post("/auth/resend-verification", { email: resendEmail });
@@ -65,6 +76,8 @@ function VerifyEmailContent() {
       // Even a validation error here must not distinguish known/unknown emails —
       // show the same neutral message either way.
       void err;
+    } finally {
+      resendLock.current = false;
     }
     setResendMessage("If an account needs verification, a new link has been sent.");
   }

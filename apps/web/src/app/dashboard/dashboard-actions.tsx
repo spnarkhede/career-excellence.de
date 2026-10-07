@@ -3,35 +3,29 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@saas/ui";
-import { broadcastLogout, onLogoutBroadcast } from "@saas/api-client";
-import { apiClient } from "../../lib/api-client";
+import { useAuth } from "../../components/auth-provider";
 
 /**
- * Logout button plus session-list link, and the receiving half of cross-tab
- * logout sync: if ANOTHER tab calls /auth/logout, this tab redirects to login
- * too, rather than silently continuing to show a now-stale authenticated page
- * (checklist "notify other tabs... log out of all devices").
+ * Logout button plus session-list link. Cross-tab logout sync (checklist
+ * "notify other tabs... log out of all devices") and client-cache clearing
+ * are now centralized in `AuthProvider.logout()` (Phase 11) rather than
+ * hand-rolled here — this component just calls it and navigates away.
  */
 export function DashboardActions() {
   const router = useRouter();
+  const auth = useAuth();
   const [loggingOut, setLoggingOut] = useState(false);
 
+  // If the AuthProvider's own cross-tab subscription (another tab logging
+  // out) flips this tab to "unauthenticated" while sitting on the
+  // dashboard, leave rather than show a now-stale authenticated page.
   useEffect(() => {
-    return onLogoutBroadcast(() => {
-      router.push("/login");
-    });
-  }, [router]);
+    if (auth.status === "unauthenticated") router.push("/login");
+  }, [auth.status, router]);
 
   async function handleLogout() {
     setLoggingOut(true);
-    try {
-      await apiClient.post("/auth/logout");
-    } catch {
-      // Even if the request fails (e.g. the session was already gone server-side),
-      // still navigate away — there is nothing useful to retry here, and staying
-      // on a dashboard the server no longer recognizes is the worse outcome.
-    }
-    broadcastLogout();
+    await auth.logout();
     router.push("/login");
   }
 

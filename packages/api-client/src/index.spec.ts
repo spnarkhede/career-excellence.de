@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ApiClientAbortedError,
   ApiClientError,
   ApiClientOfflineError,
   ApiClientTimeoutError,
+  broadcastLogin,
   broadcastLogout,
   createApiClient,
+  onLoginBroadcast,
   onLogoutBroadcast,
 } from "./index";
 
@@ -202,6 +205,72 @@ describe("createApiClient", () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect((init.headers as Record<string, string>)["X-CSRF-Token"]).toBeUndefined();
   });
+
+  // Phase 11, BUG-024: a 401 from a credential-establishing endpoint (wrong
+  // login password, wrong OTP code, expired magic link) must NOT trigger the
+  // refresh-and-redirect flow when the caller opts out via this flag.
+  it("never calls onUnauthorized or attempts a refresh when treatUnauthorizedAsOrdinaryError is set", async () => {
+    const onUnauthorized = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({
+        requestId: "r1",
+        code: "INVALID_CREDENTIALS",
+        message: "Wrong password.",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createApiClient({ baseUrl: "http://api.test", onUnauthorized });
+    const error = await client
+      .post("/auth/login", { email: "a@b.com" }, { treatUnauthorizedAsOrdinaryError: true })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ApiClientError);
+    expect((error as ApiClientError).body.message).toBe("Wrong password.");
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    // Only the one /auth/login call — no /auth/refresh attempt at all.
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("still triggers the refresh-and-redirect flow for an ordinary 401 when the flag is absent", async () => {
+    const onUnauthorized = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: async () => ({ requestId: "r1", code: "UNAUTHORIZED", message: "Session expired." }),
+      }),
+    );
+    const client = createApiClient({ baseUrl: "http://api.test", onUnauthorized });
+    await client.get("/profile/me").catch(() => {});
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+  });
+
+  // Phase 11 task 2: a caller-supplied AbortSignal must cancel the underlying
+  // fetch (not just be ignored in favor of the internal timeout controller),
+  // and the resulting rejection must be distinguishable from a real timeout.
+  it("aborts the request and throws ApiClientAbortedError when an external signal fires", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        });
+      }),
+    );
+    const controller = new AbortController();
+    const client = createApiClient({ baseUrl: "http://api.test" });
+    const promise = client.get("/auth/me", { signal: controller.signal });
+    controller.abort();
+    await expect(promise).rejects.toBeInstanceOf(ApiClientAbortedError);
+  });
 });
 
 // Checklist "Cross-tab synchronization": notify other tabs with BroadcastChannel,
@@ -254,5 +323,77 @@ describe("broadcastLogout / onLogoutBroadcast", () => {
       listener({ key: "auth-logout-ping" });
     }
     expect(callback).toHaveBeenCalledOnce();
+  });
+});
+
+// Phase 11 task 3: "cross-tab sync for login" — a login/OTP/magic-link
+// verification in one tab notifies every other open tab, mirroring the
+// existing logout broadcast exactly.
+describe("broadcastLogin / onLoginBroadcast", () => {
+  it("delivers a broadcastLogin() call to a subscriber via BroadcastChannel", () => {
+    const listeners: Array<(event: unknown) => void> = [];
+    class FakeBroadcastChannel {
+      onmessage: ((event: unknown) => void) | null = null;
+      postMessage(message: unknown) {
+        for (const listener of listeners) listener({ data: message });
+        if (this.onmessage) this.onmessage({ data: message });
+      }
+      close() {}
+    }
+    const Patched = class extends FakeBroadcastChannel {
+      constructor() {
+        super();
+        listeners.push((event) => this.onmessage?.(event));
+      }
+    };
+    vi.stubGlobal("BroadcastChannel", Patched);
+
+    const callback = vi.fn();
+    const unsubscribe = onLoginBroadcast(callback);
+    broadcastLogin();
+    expect(callback).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
+
+  it("falls back to a storage-event ping when BroadcastChannel is unavailable", () => {
+    vi.stubGlobal("BroadcastChannel", undefined);
+    const listeners: Record<string, Array<(e: { key?: string }) => void>> = {};
+    vi.stubGlobal("addEventListener", (type: string, listener: (e: { key?: string }) => void) => {
+      (listeners[type] ??= []).push(listener);
+    });
+    vi.stubGlobal("removeEventListener", () => {});
+    const setItem = vi.fn();
+    vi.stubGlobal("localStorage", { setItem });
+
+    const callback = vi.fn();
+    onLoginBroadcast(callback);
+    broadcastLogin();
+
+    expect(setItem).toHaveBeenCalledWith("auth-login-ping", expect.any(String));
+    for (const listener of listeners.storage ?? []) {
+      listener({ key: "auth-login-ping" });
+    }
+    expect(callback).toHaveBeenCalledOnce();
+  });
+
+  it("a login broadcast never fires a logout subscriber, and vice versa", () => {
+    vi.stubGlobal("BroadcastChannel", undefined);
+    const listeners: Record<string, Array<(e: { key?: string }) => void>> = {};
+    vi.stubGlobal("addEventListener", (type: string, listener: (e: { key?: string }) => void) => {
+      (listeners[type] ??= []).push(listener);
+    });
+    vi.stubGlobal("removeEventListener", () => {});
+    vi.stubGlobal("localStorage", { setItem: vi.fn() });
+
+    const loginCallback = vi.fn();
+    const logoutCallback = vi.fn();
+    onLoginBroadcast(loginCallback);
+    onLogoutBroadcast(logoutCallback);
+
+    broadcastLogin();
+    for (const listener of listeners.storage ?? []) listener({ key: "auth-login-ping" });
+
+    expect(loginCallback).toHaveBeenCalledOnce();
+    expect(logoutCallback).not.toHaveBeenCalled();
   });
 });
