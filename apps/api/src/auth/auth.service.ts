@@ -14,10 +14,12 @@ import {
   duplicateSignupNoticeTemplate,
   magicLinkEmailTemplate,
   otpEmailTemplate,
+  passwordChangedEmailTemplate,
   passwordResetEmailTemplate,
   StubEmailProvider,
   verificationEmailTemplate,
 } from "@saas/email";
+import { enqueueEmail } from "../common/email-queue.js";
 import { logger } from "@saas/observability";
 import {
   hashIp,
@@ -98,6 +100,13 @@ const OTP_TTL_MS = 5 * 60 * 1000;
 const MAGIC_LINK_TTL_MS = 10 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
 const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
+
+// Phase 8 (password reset): 45 minutes sits inside the task's 30-60 minute
+// range without being pinned to either boundary. Cooldown mirrors the OTP/
+// verification-resend pattern (per-destination, not just the controller's
+// per-IP @Throttle) — checklist "rate limited per email and IP."
+const RESET_PASSWORD_TTL_SECONDS = 45 * 60;
+const RESET_PASSWORD_RESEND_COOLDOWN_MS = 60 * 1000;
 
 // Phase 7: access tokens are signed with asymmetric RS256, never the shared-secret
 // HS256 used before this phase — a leaked verification key (the PUBLIC half)
@@ -303,9 +312,19 @@ export class AuthService {
     ctx: RequestContext,
     sentEventType: string,
     failedEventType: string,
+    // Phase 8: password-reset-related emails go through the BullMQ queue
+    // (checklist "email sent from a queue") instead of the direct, in-request
+    // send every other email type still uses — opted in per call site rather
+    // than switched globally, since broadening this to every email type is a
+    // larger change than this phase's explicit scope.
+    queued = false,
   ): Promise<void> {
     try {
-      await emailProvider.send({ to, subject, html });
+      if (queued) {
+        await enqueueEmail({ to, subject, html });
+      } else {
+        await emailProvider.send({ to, subject, html });
+      }
       await this.recordAuthEvent(userId, sentEventType, ctx);
     } catch (err) {
       logger.error({ err, requestId: ctx.requestId, userId }, "Email delivery failed");
@@ -606,43 +625,117 @@ export class AuthService {
 
   async requestPasswordReset(input: RequestPasswordResetInput, ctx: RequestContext): Promise<void> {
     const user = await prisma.user.findUnique({ where: { email: input.email } });
-    // Neutral response regardless of whether the account exists.
-    if (!user || user.deletedAt) return;
 
-    const { token, expiresAt } = issueOneTimeToken(user.id, "reset_password", 60 * 60);
+    // Checklist "Enumeration protection": an unknown/deleted account still does a
+    // comparable amount of work (generate+hash a token) before returning, instead
+    // of short-circuiting immediately — narrows, though doesn't perfectly close,
+    // the timing gap against the real branch below (the dominant remaining cost
+    // difference is the DB write + queue enqueue, which has no cheap equivalent to
+    // fake without itself writing something; see FINDINGS.md for the honest
+    // limitation this leaves).
+    if (!user || user.deletedAt) {
+      hashToken(generateSecureToken(32));
+      await this.recordAuthEvent(null, "password_reset_requested", ctx);
+      return;
+    }
+
+    // Per-email cooldown (distinct from the controller's per-IP @Throttle) +
+    // "a new request invalidates earlier tokens" — same pattern as
+    // requestOtp/resendVerification.
+    const lastToken = await prisma.oneTimeToken.findFirst({
+      where: { userId: user.id, purpose: "reset_password" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (
+      lastToken &&
+      Date.now() - lastToken.createdAt.getTime() < RESET_PASSWORD_RESEND_COOLDOWN_MS
+    ) {
+      return;
+    }
+    await prisma.oneTimeToken.updateMany({
+      where: { userId: user.id, purpose: "reset_password", usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
+    const { token, expiresAt } = issueOneTimeToken(
+      user.id,
+      "reset_password",
+      RESET_PASSWORD_TTL_SECONDS,
+    );
     await prisma.oneTimeToken.create({
       data: { userId: user.id, purpose: "reset_password", tokenHash: hashToken(token), expiresAt },
     });
     const resetUrl = `${env.APP_ENV === "local" ? "http://localhost:3000" : ""}/reset-password?token=${token}`;
-    await emailProvider.send({
-      to: user.email,
-      subject: "Reset your password",
-      html: passwordResetEmailTemplate(resetUrl),
-    });
-    await this.recordAuthEvent(user.id, "password_reset_requested", ctx);
+    await this.sendEmail(
+      user.id,
+      user.email,
+      "Reset your password",
+      passwordResetEmailTemplate(resetUrl),
+      ctx,
+      "password_reset_requested",
+      "password_reset_email_failed",
+      true,
+    );
   }
 
   async resetPassword(input: ResetPasswordInput, ctx: RequestContext): Promise<void> {
     const tokenHash = hashToken(input.token);
     const record = await prisma.oneTimeToken.findUnique({ where: { tokenHash } });
-    if (!record || record.purpose !== "reset_password" || record.usedAt) {
-      throw new BadRequestException("This reset link is invalid or has already been used.");
+
+    if (!record || record.purpose !== "reset_password") {
+      throw new BadRequestException({
+        code: "RESET_TOKEN_INVALID",
+        message: "This reset link is invalid.",
+      });
+    }
+    if (record.usedAt) {
+      await this.recordAuthEvent(record.userId, "password_reset_failed_used_token", ctx);
+      throw new BadRequestException({
+        code: "RESET_TOKEN_USED",
+        message: "This reset link has already been used.",
+      });
     }
     if (isExpired(record.expiresAt)) {
-      throw new BadRequestException("This reset link has expired.");
+      await this.recordAuthEvent(record.userId, "password_reset_failed_expired_token", ctx);
+      throw new BadRequestException({
+        code: "RESET_TOKEN_EXPIRED",
+        message: "This reset link has expired.",
+      });
     }
 
     if (env.FEATURE_BREACHED_PASSWORD_CHECK && (await isPasswordBreached(input.password))) {
-      throw new BadRequestException(
-        "This password has appeared in a known data breach. Please choose a different one.",
-      );
+      throw new BadRequestException({
+        code: "PASSWORD_BREACHED",
+        message:
+          "This password has appeared in a known data breach. Please choose a different one.",
+      });
     }
 
     const passwordHash = await hashPassword(input.password);
+
+    // Atomic consume: the WHERE clause re-checks `usedAt: null` at the moment of
+    // the UPDATE itself, not just at the earlier SELECT above — the same pattern
+    // Phase 6 applied to OTP/magic-link (see BUG-009) and Phase 7 relies on for
+    // refresh-token rotation. Without this, two concurrent submissions of the same
+    // still-valid token could both pass the checks above before either writes
+    // `usedAt`, both succeeding (test: "two simultaneous submits with one token,
+    // exactly one succeeds").
+    const consumed = await prisma.oneTimeToken.updateMany({
+      where: { id: record.id, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+    if (consumed.count === 0) {
+      await this.recordAuthEvent(record.userId, "password_reset_failed_used_token", ctx);
+      throw new BadRequestException({
+        code: "RESET_TOKEN_USED",
+        message: "This reset link has already been used.",
+      });
+    }
+
+    // Revoke every existing session; the user must sign in again with the new
+    // password (checklist "Session invalidation after password change").
     await prisma.$transaction([
       prisma.user.update({ where: { id: record.userId }, data: { passwordHash } }),
-      prisma.oneTimeToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
-      // Revoke every existing session; the user must sign in again with the new password.
       prisma.session.updateMany({
         where: { userId: record.userId, revokedAt: null },
         data: { revokedAt: new Date(), revokedReason: "password_reset" },
@@ -650,6 +743,20 @@ export class AuthService {
     ]);
 
     await this.recordAuthEvent(record.userId, "password_reset_completed", ctx);
+
+    const user = await prisma.user.findUnique({ where: { id: record.userId } });
+    if (user) {
+      await this.sendEmail(
+        user.id,
+        user.email,
+        "Your password was changed",
+        passwordChangedEmailTemplate(),
+        ctx,
+        "password_changed_notice_sent",
+        "password_changed_notice_failed",
+        true,
+      );
+    }
   }
 
   /** Authenticated password change (distinct from the token-based `resetPassword`

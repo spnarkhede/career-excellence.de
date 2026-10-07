@@ -667,3 +667,134 @@ pnpm test && pnpm db:check-consistency` against a real, disposable Postgres data
 - **Regression risk:** N/A — no fix has been applied; this is flagged for a future
   decision.
 - **How to test:** N/A until a decision is made on which semantics are intended.
+
+### BUG-012: `resetPassword()` consumed a reset token via a non-atomic read-then-write, letting two concurrent submissions of the same token both succeed
+
+- **Label:** Confirmed bug
+- **Severity:** HIGH — identical in shape and impact to BUG-009 (OTP), applied to
+  password reset: the "single use" guarantee a reset token exists to provide could
+  be defeated by two concurrent submissions, each changing the password and
+  revoking sessions independently, which is exactly the race this phase's own test
+  requirement ("two simultaneous submits with one token, exactly one succeeds")
+  exists to catch.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/auth.service.ts`, method `resetPassword`
+  (the Phase 4 implementation, before this phase's rewrite)
+- **Exact location:** The sequence `if (record.usedAt) throw ...` (a read-only
+  check) followed much later by `prisma.oneTimeToken.update({ where: { id: record.id }, data: { usedAt: new Date() } })` inside a `$transaction` array — the
+  `update` only matches on `id`, not `usedAt: null`, so it unconditionally
+  succeeds regardless of what another concurrent call already did.
+- **Problem:** Between the `usedAt` check and the `update`, a second concurrent
+  call with the same token can pass the same check before either call writes
+  `usedAt`, so both proceed to update the password hash and revoke sessions.
+- **Root cause:** Same TOCTOU (time-of-check to time-of-use) pattern already
+  identified and fixed for OTP in BUG-009 — a check-then-act sequence split across
+  two separate statements has no atomicity guarantee from Postgres unless combined
+  into one conditional write.
+- **Trigger:** Two requests hitting `POST /auth/password-reset/confirm` with the
+  same valid, unused token at nearly the same time — a double-click on "Reset
+  password," a retried request after an ambiguous network response, or a
+  deliberate replay timed to race the original.
+- **Impact:** Prior to this fix, a single reset link could be used to set the
+  password twice (last-write-wins, non-deterministic which password "wins"),
+  undermining task 4's "mark the token used atomically so only one concurrent
+  request proceeds."
+- **Reproduction steps:** 1) Request a password reset. 2) Fire two
+  `resetPassword` calls with the identical token via `Promise.allSettled` (no
+  `await` between them), each with a different new password. 3) Prior to the fix,
+  observe both could resolve successfully.
+- **Expected behavior:** Exactly one of the two concurrent calls succeeds; the
+  other is rejected with the same `RESET_TOKEN_USED` response as any other
+  already-consumed token (enumeration-safe — it must not reveal "someone else
+  just used this").
+- **Actual behavior:** Both could succeed, prior to this fix.
+- **Why it happens:** See root cause.
+- **Related components:** Identical pattern/fix to BUG-009 (`verifyOtp`) and the
+  refresh-token rotation logic (Phase 7) — all three now use the same atomic
+  `updateMany` guarded by the one-time-use field being `null` at the moment of
+  the write, not just at an earlier read.
+- **Recommended fix (applied):** Replaced the plain `update` with
+  `prisma.oneTimeToken.updateMany({ where: { id: record.id, usedAt: null }, data: { usedAt: new Date() } })`, checking `result.count === 0` to detect and
+  reject the losing racer, before proceeding to the password-hash/session-revoke
+  transaction.
+- **Regression risk:** Low — the non-concurrent (overwhelming majority) case is
+  unchanged; only the concurrent-race case's outcome changes, from "both
+  incorrectly succeed" to "exactly one correctly succeeds."
+- **How to test the fix:** `apps/api/test/phase8-password-reset.integration.spec.ts`'s
+  "lets exactly one of two concurrent resetPassword submissions with the same
+  token succeed" test — written as a real (non-mocked) integration test,
+  structured to skip cleanly via `isDatabaseReachable()` since no live database is
+  available in this session; status is Requires manual verification, not
+  Confirmed working, per AUTH_RULES.md rule 13.
+
+### BUG-013: `POST /auth/password-reset/confirm` had no rate limiting at all
+
+- **Label:** Confirmed bug
+- **Severity:** MEDIUM — a 32-byte token is not practically guessable, so this is
+  not a token-guessing vulnerability in the cryptographic sense, but an unthrottled
+  endpoint that accepts a token and a password is still an unnecessary amplifier
+  for any other weakness (e.g. a leaked/logged token, or simple resource
+  exhaustion) — every other sensitive unauthenticated endpoint in this codebase
+  (`/otp/verify`, `/magic-link/verify`, `/password-reset/request` itself) has a
+  `@Throttle` decorator; this one, alone, did not.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/auth.controller.ts`, method
+  `resetPassword` (route `POST /auth/password-reset/confirm`)
+- **Exact location:** The handler had no `@Throttle(...)` decorator at all, unlike
+  every sibling confirm/verify endpoint.
+- **Problem:** No per-IP request limit on this route.
+- **Root cause:** Likely an oversight when the endpoint was first written in
+  Phase 4 — `/password-reset/request` got a `@Throttle` (5/60s), and its
+  natural pair, `/password-reset/confirm`, didn't.
+- **Trigger:** Any sustained request volume against this endpoint.
+- **Impact:** No defense-in-depth rate limit on a sensitive unauthenticated
+  endpoint, prior to this fix.
+- **Reproduction steps:** 1) Send 100 requests/second to
+  `POST /auth/password-reset/confirm` with garbage tokens. 2) Prior to the fix,
+  observe no 429 responses at any volume.
+- **Expected behavior:** The same per-IP throttling discipline applied to every
+  other confirm/verify endpoint.
+- **Actual behavior:** Unthrottled, prior to this fix.
+- **Why it happens:** See root cause.
+- **Related components:** None — isolated to this one route's decorator.
+- **Recommended fix (applied):** Added `@Throttle({ default: { limit: 10, ttl: 60_000 } })`, matching the OTP/magic-link verify endpoints' limit.
+- **Regression risk:** Low — a legitimate user submits this form once per reset
+  attempt; 10 requests/60s has no realistic chance of blocking normal use.
+- **How to test the fix:** No dedicated automated test (would need a running HTTP
+  server and the Redis-backed throttler wired up) — Requires manual verification;
+  written steps: send 11+ requests/minute from one IP, confirm the 11th gets 429.
+
+### Potential risk: `requestPasswordReset` is not fully timing-safe between known and unknown emails
+
+- **Label:** Potential risk
+- **Severity:** LOW — this is the same shape of limitation already present (and
+  previously accepted without a fix) in `resendVerification` and `requestOtp`;
+  flagging it here because this phase's own task list explicitly says "same
+  response and similar timing for all emails," which is a stronger claim than
+  "same response" alone.
+- **Status:** Requires manual verification (an honest limitation, not something
+  this phase's change claims to have fully solved)
+- **Component/file:** `apps/api/src/auth/auth.service.ts`, method
+  `requestPasswordReset`
+- **Problem:** The unknown/deleted-account branch now does a LITTLE extra work
+  (generates and hashes a 32-byte token, discarding both) to narrow the timing gap
+  against the real branch (which also writes to the database and enqueues an
+  email job), but this is not a true constant-time guarantee — the real branch
+  still does strictly more work (a DB write, a cooldown lookup, a queue `add`
+  call) than the fake branch does.
+- **Root cause:** Unlike `login()`'s dummy-hash protection — which works because
+  argon2id hashing is deliberately, overwhelmingly the slowest operation in that
+  function, so matching its cost on both branches closes the gap almost
+  completely — there is no single dominant slow operation in `requestPasswordReset`
+  to equalize against; the remaining asymmetry is a handful of fast operations
+  (one DB write, one Redis round trip) that a sufficiently sensitive timing
+  measurement could still in principle distinguish.
+- **Recommended fix (if full timing-safety is required):** Add an artificial,
+  calibrated delay to the fake branch sized to match the real branch's typical
+  total latency — introduces its own complexity (the delay must track the real
+  branch's cost as that cost changes, e.g. if Redis latency grows) and was judged
+  out of scope for this phase without a human decision on how much engineering
+  effort this residual, narrow timing side-channel warrants.
+- **Regression risk:** N/A — no further fix applied this phase.
+- **How to test:** N/A until a decision is made on whether the residual gap
+  warrants a calibrated-delay fix.

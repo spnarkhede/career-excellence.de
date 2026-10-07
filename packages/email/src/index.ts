@@ -32,6 +32,13 @@ export function magicLinkEmailTemplate(signInUrl: string): SendEmailInput["html"
   return `<p>Click the link below to sign in.</p><p><a href="${signInUrl}">Sign in</a></p><p>This link expires soon and can only be used once. If you didn't request this, you can ignore this email.</p>`;
 }
 
+/** Confirms a password change/reset to the account owner — sent regardless of
+ * which flow changed it (token-based reset or the authenticated change-password
+ * endpoint), so the owner has a record even if they didn't initiate it. */
+export function passwordChangedEmailTemplate(): SendEmailInput["html"] {
+  return `<p>Your password was just changed.</p><p>Every other session on your account has been signed out. If this wasn't you, reset your password immediately and contact support.</p>`;
+}
+
 /** Sent when someone tries to sign up with an email that already has an account — no
  * account is created; this notifies the real owner without confirming anything to the
  * person who submitted the form (who never sees a different response either way). */

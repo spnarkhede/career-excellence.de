@@ -237,6 +237,9 @@ export class AuthController {
 
   @Post("password-reset/confirm")
   @HttpCode(200)
+  // Was previously unthrottled — a token-guessing attempt against this endpoint
+  // had no rate limit at all. 10/60s matches the OTP/magic-link verify limits.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UsePipes(new ZodValidationPipe(resetPasswordSchema))
   async resetPassword(@Body() dto: ResetPasswordDto, @Req() req: Request) {
     await this.authService.resetPassword(dto, requestContext(req));

@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-07
+
+### Added
+
+- `requestPasswordReset`: per-email resend cooldown (60s) and invalidation of
+  any previous unused reset token before issuing a new one, matching the
+  OTP/magic-link resend pattern.
+- `apps/api/src/common/email-queue.ts`: a BullMQ producer letting `AuthService`
+  hand emails to apps/worker's already-existing (previously API-unused) email
+  queue instead of sending them synchronously in-request. Opted in for the
+  password-reset-request email and the new password-changed confirmation
+  email only (checklist "email sent from a queue").
+- `passwordChangedEmailTemplate` (`packages/email`) and a confirmation email
+  sent on every successful password reset.
+- Structured error codes on `resetPassword` failures (`RESET_TOKEN_INVALID`,
+  `RESET_TOKEN_USED`, `RESET_TOKEN_EXPIRED`) plus a failure `auth_event` for
+  each, previously only recorded on success.
+- `@Throttle` on `POST /auth/password-reset/confirm` (10/60s) — previously
+  unthrottled.
+- Reset-password page rewrite: token stripped from the URL after load,
+  `referrer: no-referrer` page metadata, distinct expired/used/invalid states
+  each with a "Request a new link" link to `/forgot-password`, and redirect
+  through the shared `isAllowedRedirect`/`next`-param safe-redirect helper
+  (previously hardcoded to `/login` with no `next` support).
+- 10 new tests in `apps/api/test/phase8-password-reset.integration.spec.ts`,
+  covering every Phase 8 checklist item including two simultaneous submits
+  with one token (exactly one succeeds) and session revocation across two
+  independent logins ("a second browser context").
+
+### Fixed
+
+- **BUG-012 (high severity)**: `resetPassword()`'s token consumption used a
+  non-atomic read-then-update — the same race already fixed for OTP as
+  BUG-009 — letting two concurrent submissions of the same reset token both
+  succeed. Fixed with an atomic `updateMany` guarded by `usedAt: null`.
+- **BUG-013 (medium severity)**: `POST /auth/password-reset/confirm` had no
+  rate limiting at all, unlike every sibling verify/confirm endpoint. Fixed
+  by adding the same 10/60s limit used by OTP/magic-link verify.
+
+### Notes
+
+- Same environment limitation as every prior phase: no live Postgres database
+  was available, so every new DB-dependent test is written as a real
+  integration test that skips cleanly rather than being claimed as "Confirmed
+  working." No browser automation was run against the rewritten
+  reset-password page.
+- `requestPasswordReset`'s enumeration-protection narrows, but does not fully
+  close, a timing side-channel between known and unknown emails — flagged as
+  a documented Potential risk, not claimed as fully timing-safe. See
+  `docs/auth/PROGRESS.md` Phase 8 detail.
+- Queue adoption is scoped to this phase's two new email sends only; every
+  other email type in the codebase still sends synchronously, unchanged.
+
 ## [0.8.0] - 2026-10-07
 
 ### Added
@@ -369,7 +422,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and creates a git tag.
 - References to AUTH_RULES.md from CLAUDE.md and AGENTS.md.
 
-[Unreleased]: https://example.com/compare/v0.8.0...HEAD
+[Unreleased]: https://example.com/compare/v0.9.0...HEAD
+[0.9.0]: https://example.com/compare/v0.8.0...v0.9.0
 [0.8.0]: https://example.com/compare/v0.7.0...v0.8.0
 [0.7.0]: https://example.com/compare/v0.6.0...v0.7.0
 [0.6.0]: https://example.com/compare/v0.5.0...v0.6.0

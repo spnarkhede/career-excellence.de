@@ -893,6 +893,89 @@ createdAt, lastUsedAt, expiresAt }` instead of returning
    not just raw secrets.
 8. No inconsistent-state risk.
 
+### `AuthService.requestPasswordReset` / `resetPassword` — rewritten for Phase 8 (`apps/api/src/auth/auth.service.ts`) — Implemented
+
+1. `requestPasswordReset` now adds a per-email resend cooldown and invalidates
+   any previous unused reset token before issuing a new one (same pattern as
+   OTP/magic-link), narrows (but does not fully close — see FINDINGS.md) the
+   timing gap between known/unknown emails, and sends the reset email through
+   the BullMQ queue instead of directly. `resetPassword` now consumes the
+   token atomically (`updateMany` guarded by `usedAt: null`, fixing BUG-012 —
+   the same TOCTOU race as BUG-009), returns a distinct `code`
+   (`RESET_TOKEN_INVALID`/`RESET_TOKEN_USED`/`RESET_TOKEN_EXPIRED`) per failure
+   reason, records a failure `auth_event` for each, and sends a "password
+   changed" confirmation email (queued) on success.
+2. Called by `AuthController.requestPasswordReset`/`resetPassword`
+   (`/auth/password-reset/request`, `/auth/password-reset/confirm`).
+3. Calls `prisma.oneTimeToken`/`prisma.session`/`prisma.user`,
+   `issueOneTimeToken`/`hashToken` (`@saas/auth`/`@saas/security`),
+   `this.sendEmail` (now supports queued delivery), `enqueueEmail`.
+4. Receives `{ email }` / `{ token, password }` and a request context.
+5. Returns `void`; `resetPassword` throws a `BadRequestException` with a
+   structured `{ code, message }` body on any failure.
+6. On failure: `RESET_TOKEN_INVALID`/`USED`/`EXPIRED` each describe the
+   TOKEN's state only — none reveal whether the underlying account exists
+   (same enumeration-safe shape as `verifyEmail`'s reason enum).
+7. Secure: only `tokenHash` is ever persisted or logged; the raw token never
+   reaches the database, a log line, or a thrown error.
+8. **Fixed inconsistent-state risk**: the previous implementation consumed a
+   token via a separate read-then-`update` (BUG-012), which let two concurrent
+   submissions of the same token both succeed. The atomic `updateMany`-with-
+   `usedAt: null` guard closes this.
+
+### `enqueueEmail` — BullMQ email-queue producer (`apps/api/src/common/email-queue.ts`) — Implemented
+
+1. New module letting `AuthService` hand an email off to apps/worker's
+   already-existing `emailWorker` (BullMQ, `apps/worker/src/processors/
+email.processor.ts`) instead of sending it synchronously in-request —
+   checklist "email sent from a queue." The Redis connection is created lazily
+   on first use, not at module import time, because every existing test file
+   transitively imports this module via `auth.service.ts` and an eager
+   connection would attempt to reach Redis in every one of them regardless of
+   whether that test ever triggers an email.
+2. Called by `AuthService.sendEmail` when its new `queued` parameter is `true`
+   (currently opted in only for the two password-reset-related emails — see
+   that method's own entry above).
+3. Calls `bullmq`'s `Queue.add`.
+4. Receives a `SendEmailInput` (`to`/`subject`/`html`).
+5. Returns `void`; a Redis-connection failure rejects, which the caller
+   (`sendEmail`) already catches, logs, and records a `*_failed` auth event
+   for — never thrown further.
+6. On failure: never crashes the process — the lazily-created connection has
+   an `error` listener attached specifically so an unhandled Redis error
+   (which would otherwise crash the process per Node's EventEmitter
+   semantics) just logs instead.
+7. Secure: no email content is logged beyond what `sendEmail`'s existing
+   failure-path logging already does (no raw token is ever part of the
+   logged fields, only the error and request/user IDs).
+8. No inconsistent-state risk — a failed enqueue is equivalent to a failed
+   direct send from the caller's perspective (both are caught the same way).
+
+### Reset-password page rewrite (`apps/web/src/app/(auth)/reset-password/{page,reset-password-client}.tsx`) — Implemented
+
+1. Now strips the token from the visible address bar after reading it
+   (previously left it in the URL/history for the page's lifetime), sets
+   `referrer: "no-referrer"` page metadata, differentiates
+   expired/used/invalid token states (each with a distinct message and a
+   "Request a new link" affordance pointing at `/forgot-password`), and
+   redirects through the same `isAllowedRedirect`/`next`-param safe-redirect
+   helper used by login/verify-email/magic-link — previously hardcoded
+   `router.push("/login?reason=password_reset")` with no `next` support.
+2. Rendered by `apps/web/src/app/(auth)/reset-password/page.tsx`.
+3. Calls `POST /auth/password-reset/confirm`, `isAllowedRedirect`.
+4. Receives the `token` and `next` query params.
+5. Returns rendered UI; on success, navigates to the resolved (allowlisted)
+   redirect target with `?reason=password_reset`.
+6. On failure: a structured `code` from the API response
+   (`RESET_TOKEN_INVALID`/`USED`/`EXPIRED`) selects a dedicated recovery
+   state; any other error (e.g. a validation or breached-password rejection)
+   shows an inline form error instead, letting the user simply retry with a
+   different password rather than being sent to the "request a new link"
+   dead end.
+7. Secure: `no-referrer` page metadata; redirect target is always
+   allowlist-checked.
+8. No inconsistent-state risk — purely client-side rendering logic.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned
