@@ -435,7 +435,15 @@ export class OAuthService {
       );
     }
 
-    await prisma.oauthAccount.deleteMany({ where: { userId, provider } });
+    // Phase 10 (object-level checks, checklist "Return 404 where existence
+    // must stay hidden"): this scopes the delete to `userId`, so a provider
+    // the caller never linked gets the same 404 whether it was never linked
+    // by anyone or is linked to a DIFFERENT account — never a 403 that would
+    // confirm it exists elsewhere.
+    const result = await prisma.oauthAccount.deleteMany({ where: { userId, provider } });
+    if (result.count === 0) {
+      throw new NotFoundException("No linked account found for that provider.");
+    }
     await this.authService.recordAuthEvent(userId, "oauth_account_unlinked", ctx, { provider });
   }
 }

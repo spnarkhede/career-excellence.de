@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   HttpException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
 import { generateNumericOtp, issueOneTimeToken } from "@saas/auth";
@@ -315,11 +316,11 @@ export class AuthService {
     ctx: RequestContext,
     sentEventType: string,
     failedEventType: string,
-    // Phase 8: password-reset-related emails go through the BullMQ queue
-    // (checklist "email sent from a queue") instead of the direct, in-request
-    // send every other email type still uses — opted in per call site rather
-    // than switched globally, since broadening this to every email type is a
-    // larger change than this phase's explicit scope.
+    // Phase 8 password-reset and Stage 4 signup-verification emails go through the
+    // BullMQ queue (checklist "email sent from a queue" / "queue with retries") —
+    // opted in per call site rather than switched globally, since broadening this
+    // to every email type (e.g. the duplicate-signup notice) is out of this stage's
+    // explicit scope.
     queued = false,
   ): Promise<void> {
     try {
@@ -348,7 +349,11 @@ export class AuthService {
       data: { usedAt: new Date() },
     });
 
-    const { token, expiresAt } = issueOneTimeToken(userId, "verify_email", 60 * 60 * 24);
+    const { token, expiresAt } = issueOneTimeToken(
+      userId,
+      "verify_email",
+      env.AUTH_VERIFICATION_TOKEN_TTL_SECONDS,
+    );
     await prisma.oneTimeToken.create({
       data: { userId, purpose: "verify_email", tokenHash: hashToken(token), expiresAt },
     });
@@ -361,6 +366,7 @@ export class AuthService {
       ctx,
       "verification_sent",
       "verification_send_failed",
+      true,
     );
   }
 
@@ -427,7 +433,7 @@ export class AuthService {
    * alongside the new one).
    */
   async login(
-    input: LoginInput,
+    input: Omit<LoginInput, "rememberMe">,
     ctx: RequestContext,
     existingSessionId?: string | null,
   ): Promise<IssuedTokens & { userId: string }> {
@@ -985,11 +991,22 @@ export class AuthService {
     });
   }
 
+  /**
+   * Phase 10 (object-level checks, checklist "Return 404 where existence
+   * must stay hidden"): a session id that belongs to someone else gets the
+   * SAME 404 as one that never existed at all — the query's `userId` scope
+   * means a non-owned, real session id can never be distinguished from a
+   * made-up one from the response alone, so a 403 (which would correctly
+   * describe "this exists but isn't yours") is deliberately NOT used here.
+   */
   async revokeSession(userId: string, sessionId: string, ctx: RequestContext): Promise<void> {
-    await prisma.session.updateMany({
+    const result = await prisma.session.updateMany({
       where: { id: sessionId, userId, revokedAt: null },
       data: { revokedAt: new Date(), revokedReason: "user_revoked" },
     });
+    if (result.count === 0) {
+      throw new NotFoundException("Session not found.");
+    }
     await this.recordAuthEvent(userId, "session_revoked", ctx, { sessionId });
   }
 

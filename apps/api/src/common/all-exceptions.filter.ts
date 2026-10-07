@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from "@nestjs/common";
+import { ForbiddenError } from "@saas/authorization";
 import { Prisma } from "@saas/database";
 import { logger } from "@saas/observability";
 
@@ -36,6 +37,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
         details =
           typeof b.details === "object" ? (b.details as Record<string, unknown>) : undefined;
       }
+    } else if (exception instanceof ForbiddenError) {
+      // BUG-015: `@saas/authorization`'s assertPermission/ForbiddenError is a
+      // plain Error, not a Nest HttpException — without this branch it fell
+      // through to the generic `instanceof Error` case below and returned a
+      // 500, never the 403 every permission check in this codebase is
+      // written to produce (checklist: "403 when forbidden").
+      status = HttpStatus.FORBIDDEN;
+      code = exception.code;
+      message = exception.message;
     } else if (
       exception instanceof Prisma.PrismaClientInitializationError ||
       (exception instanceof Prisma.PrismaClientKnownRequestError &&

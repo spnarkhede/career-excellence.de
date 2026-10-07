@@ -63,9 +63,73 @@ export function isOriginAllowed(origin: string | undefined, allowedOrigins: stri
   return allowedOrigins.includes(origin);
 }
 
+const DEFAULT_SAFE_RETURN_TO = "/dashboard";
+
+/**
+ * Phase 10 ("Safe return URL helper"): true only for a strictly same-origin,
+ * single-segment-rooted relative path — decoded EXACTLY ONCE (never zero
+ * times, which would let a %2F-encoded "//evil.example" slip past the
+ * literal prefix checks below; never more than once, which opens its own
+ * double-encoding bypass class) before every check:
+ *
+ * - must start with exactly one `/` — `//host` (protocol-relative) is
+ *   rejected, and so is a bare scheme like `javascript:...` (which never
+ *   starts with `/` at all).
+ * - no backslash anywhere — browsers following the WHATWG URL spec treat
+ *   `\` as equivalent to `/` for "special" schemes, so `/\evil.example`
+ *   would be re-parsed by the BROWSER as `//evil.example` (protocol-
+ *   relative) even though the literal string here starts with a single
+ *   forward slash.
+ * - no control characters (including tab/newline) — browsers strip these
+ *   during URL normalization, which can turn an innocuous-looking string
+ *   like `/\n/evil.example` into `//evil.example` after the browser's own
+ *   whitespace stripping, the same class of bypass as the backslash case.
+ */
+export function isSafeRelativePath(raw: string): boolean {
+  if (typeof raw !== "string" || raw.length === 0) return false;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return false; // malformed percent-encoding — fail closed, never guess
+  }
+  // eslint-disable-next-line no-control-regex -- deliberately matching control chars, including tab/newline/DEL
+  if (/[\x00-\x1f\x7f]/.test(decoded)) return false;
+  if (decoded.includes("\\")) return false;
+  if (!decoded.startsWith("/") || decoded.startsWith("//")) return false;
+  return true;
+}
+
+/**
+ * The canonical `?next=`/`?returnTo=` validator: returns `raw` unchanged only
+ * if it's a safe relative path (see `isSafeRelativePath`) AND, when
+ * `allowedPrefixes` is given, starts with one of those prefixes — otherwise
+ * falls back to `/dashboard` (or `opts.fallback`). Checklist task 5's "paths
+ * outside an allowlist" requirement: a safe-shaped path is still rejected if
+ * it points somewhere this particular call site never intends to send
+ * anyone (e.g. a login page's `next` should only ever point back into the
+ * app's own protected areas, not to an arbitrary same-origin static asset).
+ */
+export function safeReturnTo(
+  raw: string | null | undefined,
+  opts: { allowedPrefixes?: string[]; fallback?: string } = {},
+): string {
+  const fallback = opts.fallback ?? DEFAULT_SAFE_RETURN_TO;
+  if (!raw || !isSafeRelativePath(raw)) return fallback;
+  if (
+    opts.allowedPrefixes &&
+    !opts.allowedPrefixes.some(
+      (prefix) => raw === prefix || raw.startsWith(`${prefix}/`) || raw.startsWith(`${prefix}?`),
+    )
+  ) {
+    return fallback;
+  }
+  return raw;
+}
+
 /** Validates that a redirect target is a relative path or matches an allowlisted origin, preventing open redirects. */
 export function isAllowedRedirect(target: string, allowedOrigins: string[]): boolean {
-  if (target.startsWith("/") && !target.startsWith("//")) return true;
+  if (isSafeRelativePath(target)) return true;
   try {
     const url = new URL(target);
     return allowedOrigins.includes(url.origin);
@@ -74,11 +138,85 @@ export function isAllowedRedirect(target: string, allowedOrigins: string[]): boo
   }
 }
 
+/**
+ * Phase 10 checklist task 6 ("Redirect rules that cannot loop") formalized
+ * as a pure decision function: given a page's own identity (is it the login
+ * page?), whether the path requires auth, and whether the caller is
+ * authenticated, decide where (if anywhere) to redirect. The two real
+ * call sites (a login page checking "am I already signed in?" and a
+ * protected page's `requireUser()`/`requirePermission()` checking "is there
+ * a valid session?") each independently implement one branch of this same
+ * decision table — this function exists so the INVARIANT that makes them
+ * loop-free (mutual exclusion: login only ever redirects AWAY, a protected
+ * page only ever redirects TO login, and login can never be both at once)
+ * has one place to be exhaustively tested, rather than only being provable
+ * by reading two separate page implementations side by side.
+ */
+export interface AuthRedirectInput {
+  /** True if the CURRENT page being rendered is the login page itself. */
+  isLoginPage: boolean;
+  /** True if the current page requires authentication at all (irrelevant when `isLoginPage`). */
+  requiresAuth: boolean;
+  isAuthenticated: boolean;
+  /** The current page's own path — used to build `?next=` when redirecting
+   * an unauthenticated visitor to login. */
+  currentPath: string;
+  /** Where to send an authenticated user away from login (read from THAT
+   * page's own `?next=`, if any) — validated with `safeReturnTo`, never
+   * trusted as-is. */
+  next?: string | null;
+}
+
+/**
+ * The two REAL call sites (`requireUser()` in apps/web and apps/admin, and
+ * the login page's own "already signed in?" check) should call this instead
+ * of hand-rolling the decision — doing so makes the "cannot loop" invariant
+ * structural, not just independently re-implemented in two places and
+ * HOPED to stay in sync.
+ */
+export function resolveAuthRedirect(input: AuthRedirectInput): { redirectTo: string | null } {
+  // Checklist: "login never redirects to login" — this branch can only ever
+  // produce a redirect AWAY from login, never back to it, by construction
+  // (safeReturnTo's own fallback is /dashboard, never /login).
+  if (input.isLoginPage) {
+    if (!input.isAuthenticated) return { redirectTo: null };
+    // `?next=/login` is itself a syntactically "safe" relative path per
+    // safeReturnTo's own rules — nothing about it looks malicious — but
+    // using it here would bounce an authenticated visitor straight back to
+    // login, the exact loop checklist item 10 exists to prevent. Caught by
+    // this function's own exhaustive test (every (isAuthenticated, next)
+    // combination), not by inspection — reject it explicitly rather than
+    // trusting "syntactically safe" to also mean "semantically sensible
+    // here."
+    const target = safeReturnTo(input.next);
+    return {
+      redirectTo: target === "/login" || target.startsWith("/login?") ? "/dashboard" : target,
+    };
+  }
+
+  // Checklist: "signed out user on a protected page goes to login with
+  // returnTo" — this is the ONLY branch that ever points at /login, and it
+  // can never fire for the login page itself (handled above), so the two
+  // branches can never point at each other — the structural property that
+  // makes a 2-page cycle impossible regardless of session/profile state.
+  if (input.requiresAuth && !input.isAuthenticated) {
+    return { redirectTo: `/login?next=${encodeURIComponent(safeReturnTo(input.currentPath))}` };
+  }
+
+  return { redirectTo: null };
+}
+
 export interface CookieOptions {
   /** Empty/omitted means "no Domain attribute" — a host-only cookie. */
   domain?: string;
   secure: boolean;
-  maxAgeSeconds: number;
+  /**
+   * Omit entirely (stage 5 #74 "Session persistence setting") for a browser
+   * session cookie — no Max-Age/Expires, so the browser discards it on restart.
+   * Set equal to the token/session's own absolute lifetime for a "remember me"
+   * persistent cookie that survives a restart.
+   */
+  maxAgeSeconds?: number;
   /**
    * "strict" for cookies that should never be sent on an incoming cross-site
    * navigation (e.g. a refresh token, which is only ever read by same-site
@@ -107,7 +245,9 @@ export function sessionCookieOptions({
     // not the same as omitting the attribute.
     ...(domain ? { domain } : {}),
     path: "/",
-    maxAge: maxAgeSeconds * 1000,
+    // Omitting `maxAge` makes this a browser-session cookie (no Max-Age/Expires
+    // attribute at all) — distinct from passing `maxAge: 0`, which would delete it.
+    ...(maxAgeSeconds !== undefined ? { maxAge: maxAgeSeconds * 1000 } : {}),
   };
 }
 

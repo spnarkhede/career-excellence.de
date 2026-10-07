@@ -22,7 +22,7 @@
     "@saas/ui": "workspace:*",
     "@saas/validation": "workspace:*",
     "@tanstack/react-query": "^5.62.7",
-    "next": "^15.1.2",
+    "next": "^15.2.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-hook-form": "^7.54.1",

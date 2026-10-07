@@ -911,3 +911,391 @@ pnpm test && pnpm db:check-consistency` against a real, disposable Postgres data
   auto-links on an email collision with an existing account" test confirms
   the CODE path; the frontend message is unverified in an actual browser
   this session.
+
+### BUG-015: `ForbiddenError` fell through to the generic exception branch and returned HTTP 500 instead of 403
+
+- **Label:** Confirmed bug
+- **Severity:** HIGH — every permission-denied case in the codebase that
+  uses `assertPermission` returned a 500 Internal Server Error instead of a
+  403 Forbidden, misreporting a routine authorization failure as a server
+  fault, and giving the client no structured `code` to branch on.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/common/all-exceptions.filter.ts`
+- **Exact location:** `AllExceptionsFilter.catch` — the `instanceof Error`
+  branch, which ran for `ForbiddenError` too since it was never checked for
+  specifically.
+- **Problem:** `ForbiddenError` (from `@saas/authorization`, used by
+  `assertPermission`) is a plain `Error` subclass, not a Nest
+  `HttpException`. `AllExceptionsFilter` only special-cased `HttpException`
+  and a couple of other named error types; anything else — including
+  `ForbiddenError` — fell through to a generic `instanceof Error` branch
+  that always set `status = 500`.
+- **Root cause:** `ForbiddenError` was introduced in an earlier phase as a
+  plain `Error` (not extending `HttpException`), and at the time
+  `assertPermission` had exactly one call site (`profile.controller.ts`),
+  so the 500-instead-of-403 misclassification existed but had limited
+  reach. This phase's new `PermissionsGuard`/`@RequirePermission` pattern
+  was expected to make `assertPermission` failures common on every
+  permission-protected route going forward, surfacing the bug's blast
+  radius before it spread further.
+- **Trigger:** Any call to `assertPermission(principal, permission)` where
+  `principal` lacks `permission` — i.e. any authenticated-but-forbidden
+  request to a route guarded by `PermissionsGuard` or calling
+  `assertPermission` directly.
+- **Impact:** Clients saw a 500 for what is actually a routine, expected
+  authorization failure — breaking any client-side logic that branches on
+  403 specifically (e.g. redirecting to a "forbidden" page), and polluting
+  error-rate monitoring/alerting with authorization failures misclassified
+  as server faults.
+- **Reproduction steps:**
+  1. Authenticate as a user lacking a given permission. 2. Call a route
+     protected by `@RequirePermission(<that permission>)` (e.g.
+     `GET /profile/me` with a principal lacking `profile.read.own`). 3.
+     Observe `500` instead of the expected `403`.
+- **Expected behavior:** A `ForbiddenError` should produce HTTP 403 with
+  `code: "FORBIDDEN"`.
+- **Actual behavior (before fix):** HTTP 500 with the generic internal-error
+  response shape.
+- **Why it happens:** See root cause — `ForbiddenError` was never one of
+  `AllExceptionsFilter`'s recognized exception types.
+- **Related components:** `PermissionsGuard`, `@RequirePermission`
+  (both new this phase) — this bug would have affected every route using
+  them, not just `profile.controller.ts`'s pre-existing inline
+  `assertPermission` calls.
+- **Recommended fix (applied):** Added an explicit
+  `else if (exception instanceof ForbiddenError)` branch in
+  `AllExceptionsFilter.catch` before the generic `instanceof Error` branch,
+  setting `status = HttpStatus.FORBIDDEN`, `code = exception.code`,
+  `message = exception.message`.
+- **Regression risk:** Low — the new branch is strictly more specific than
+  the generic `Error` branch it was added before, and only changes behavior
+  for `ForbiddenError` instances specifically.
+- **How to test the fix:** `apps/api/test/all-exceptions-filter.spec.ts`
+  (new test: `filter.catch(new ForbiddenError(), host)` asserts `status`
+  called with 403 and `body.code === "FORBIDDEN"`) — actually run, 6/6
+  passing.
+
+### BUG-016: `apps/web`'s middleware hardcoded the unprefixed session cookie name, breaking auth detection in any environment using `__Host-` prefixing
+
+- **Label:** Confirmed bug
+- **Severity:** HIGH — in any non-local environment (any deployment with
+  HTTPS and no explicit cookie `Domain`, which is the expected production
+  configuration per Phase 7's `cookieName` helper), the middleware would
+  never recognize a signed-in user, redirecting every protected-page
+  visit to `/login` regardless of actual auth state.
+- **Status:** Fixed
+- **Component/file:** `apps/web/src/middleware.ts`
+- **Exact location:** The original cookie-presence check:
+  `request.cookies.get("app_session")`.
+- **Problem:** Phase 7 introduced `__Host-` cookie-prefixing (applied
+  whenever a cookie is `Secure` with no `Domain` attribute — see
+  `packages/security/src/index.ts`'s `cookieName` helper) — meaning the
+  REAL session cookie name in production is `__Host-app_session`, not the
+  literal string `"app_session"` this middleware checked for.
+- **Root cause:** The middleware was written before (or without
+  cross-referencing) Phase 7's cookie-prefixing logic, and hardcoded the
+  base name as a literal string rather than deriving it the same way the
+  API does.
+- **Trigger:** Any production-shaped deployment (HTTPS, no cookie `Domain`
+  attribute) — i.e. the expected normal production configuration, not an
+  edge case.
+- **Impact:** Every protected-page visit by a legitimately signed-in user
+  would hit this middleware's outer cookie check, find no cookie named
+  exactly `"app_session"`, and redirect to `/login` — effectively locking
+  every user out of every protected `apps/web` page in production, despite
+  a perfectly valid session existing. (Caught before this ever reached a
+  real deployment — no production environment with real HTTPS has been
+  stood up in this workstream yet.)
+- **Reproduction steps:**
+  1. Configure the API with `secure: true` and no cookie `Domain` (the
+     production default), so the session cookie is actually set as
+     `__Host-app_session`. 2. Sign in successfully (a valid `__Host-
+app_session` cookie is set). 3. Visit any protected `apps/web` page
+     (e.g. `/dashboard`). 4. The middleware's `request.cookies.get
+("app_session")` returns `undefined` (wrong name), so it redirects to
+     `/login` despite the valid session.
+- **Expected behavior:** The middleware should recognize a session cookie
+  under whichever name it actually has — prefixed or not.
+- **Actual behavior (before fix):** Redirected to `/login` whenever the
+  cookie was `__Host-`-prefixed.
+- **Why it happens:** See root cause.
+- **Related components:** `packages/security/src/index.ts`'s `cookieName`
+  (Phase 7); `apps/admin/src/middleware.ts` (new this phase, written
+  correctly from the start using the same dual-name check).
+- **Recommended fix (applied):** Added
+  `NEXT_PUBLIC_SESSION_COOKIE_NAME` to `packages/config`'s
+  `publicEnvSchema` (defaulting to `"app_session"`), and rewrote the
+  middleware's check as `hasSessionCookie(request)`, which checks both
+  `request.cookies.has(SESSION_COOKIE_BASE_NAME)` and
+  `request.cookies.has(\`__Host-${SESSION_COOKIE_BASE_NAME}\`)`.
+- **Regression risk:** Low — strictly widens what the middleware accepts
+  (checks two names instead of one); cannot newly reject a cookie it
+  previously accepted.
+- **How to test the fix:** No automated test exists for Next.js middleware
+  directly in this monorepo (no apps/web test runner is configured at
+  all) — Requires manual verification: set a `__Host-app_session` cookie
+  in a browser, confirm a protected page is NOT redirected to `/login`.
+
+### Caught pre-ship: `resolveAuthRedirect`'s first draft could redirect an authenticated visitor on `/login` back to `/login`
+
+- **Label:** Confirmed bug (caught during this phase's own implementation,
+  before any commit — same category as BUG-014 in Phase 9)
+- **Severity:** MEDIUM as drafted (never shipped/committed) — a genuine
+  redirect loop is a checklist-violating, user-facing defect (checklist
+  task 6: "login never redirects to login"), though not a security
+  vulnerability on its own.
+- **Status:** Fixed (caught by this function's own exhaustive test suite
+  before it was ever used in a real page)
+- **Component/file:** `packages/security/src/index.ts`, `resolveAuthRedirect`
+- **Exact location:** The `isLoginPage` branch's first draft:
+  `return { redirectTo: safeReturnTo(input.next) }` with no exclusion for
+  `/login` itself.
+- **Problem:** `?next=/login` is a syntactically "safe" relative path per
+  `isSafeRelativePath`'s own rules (single leading slash, no backslash, no
+  control characters) — nothing about it looks malicious. But using it
+  as-is would send an authenticated visitor who hit `/login?next=/login`
+  straight back to `/login`, the exact 2-page loop checklist item 10 exists
+  to prevent.
+- **Root cause:** "Syntactically safe" and "semantically sensible at this
+  specific call site" were conflated in the first draft — `safeReturnTo`
+  correctly validates that a string is a safe-shaped relative path, but
+  has no way to know that `/login` specifically is never a sensible
+  redirect target FROM the login page itself; that exclusion has to be
+  applied by the caller.
+- **Trigger:** An authenticated visitor loading `/login?next=/login` (or
+  any `?next=` value starting with `/login`).
+- **Impact:** Would have created a redirect loop for that specific query
+  string — never actually reachable by an ordinary user, but constructible
+  by anyone who crafted the URL, and a real violation of the "cannot loop"
+  invariant this function exists to guarantee.
+- **Reproduction steps (of the vulnerable draft, not the shipped code):**
+  1. Call `resolveAuthRedirect({ isLoginPage: true, requiresAuth: false,
+isAuthenticated: true, currentPath: "/login", next: "/login" })`. 2.
+     The draft returned `redirectTo: "/login"` — a loop.
+- **Expected behavior:** Redirecting FROM the login page must never target
+  the login page itself, for any input.
+- **Actual behavior:** N/A — never shipped; caught by the function's own
+  "never redirects FROM the login page back TO the login page, for any
+  input combination" test (`packages/security/src/index.spec.ts`), which
+  iterates every `(isAuthenticated, next)` combination including `"/login"`
+  and `"/login?x=1"`, before this function was ever called from a real
+  page.
+- **Why it happens:** See root cause.
+- **Related components:** Both real call sites (`requireUser()` in
+  apps/web and apps/admin, and the login page's own "already signed in?"
+  check) delegate to this one function specifically so this class of bug
+  has one place to be exhaustively tested rather than two independently
+  written implementations hoped to stay in sync.
+- **Recommended fix (applied):** Added an explicit check:
+  `target === "/login" || target.startsWith("/login?")` falls back to
+  `/dashboard` instead of being returned as-is.
+- **Regression risk:** None — never in a committed state; the fix only
+  narrows what this one branch can return, and the exhaustive test suite
+  covers the exclusion directly.
+- **How to test the fix:** `packages/security/src/index.spec.ts` — actually
+  run, including the specific `"/login"`/`"/login?x=1"` cases in the
+  exhaustive test.
+
+### BUG-017: Verification token lifetime was hardcoded to 24 hours, not configurable
+
+- **Label:** Confirmed bug
+- **Severity:** LOW — functionally correct at the default value; purely a
+  configurability gap, not a security or correctness defect.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/auth.service.ts`, `sendVerificationEmail()`
+- **Exact location:** `issueOneTimeToken(userId, "verify_email", 60 * 60 * 24)`
+- **Problem:** Stage 4 feature #57 requires the verification TTL be
+  "24 hours (configurable)." The value was a literal expression, not read
+  from environment configuration, so it could only be changed by editing
+  source code.
+- **Root cause:** No `AUTH_VERIFICATION_TOKEN_TTL_SECONDS` env var existed
+  in `packages/config`'s private env schema at the time this code was
+  written.
+- **Trigger:** Any deployment wanting a non-24h verification window.
+- **Impact:** Low — no incorrect behavior at the default; only blocks
+  operators from tuning the window without a code change/redeploy.
+- **Reproduction steps:** 1. Search `auth.service.ts` for the TTL value. 2. Observe it is a numeric literal, not `env.*`.
+- **Expected behavior:** TTL configurable via environment variable.
+- **Actual behavior (before fix):** Hardcoded, not configurable.
+- **Why it happens:** See root cause.
+- **Related components:** `packages/config/src/index.ts`, `.env`, `.env.example`.
+- **Recommended fix (applied):** Added `AUTH_VERIFICATION_TOKEN_TTL_SECONDS`
+  (default `86400`) to `packages/config`'s private env schema and to
+  `.env`/`.env.example`; `sendVerificationEmail()` now reads
+  `env.AUTH_VERIFICATION_TOKEN_TTL_SECONDS` instead of the literal.
+- **Regression risk:** Low — default value unchanged (86400s = 24h);
+  behavior is identical unless an operator explicitly overrides the env var.
+- **How to test the fix:** `apps/api/test/phase4-signup-verification.integration.spec.ts`
+  covers the expired-token path; `@saas/config`/`@saas/api` typecheck pass.
+  Requires manual verification for a non-default TTL value (no
+  Docker/Postgres available in this environment to run the integration
+  suite against a real database).
+
+### BUG-018: Password minimum length was 8, not 15, despite this app having no second authentication factor
+
+- **Label:** Confirmed bug
+- **Severity:** MEDIUM — weaker-than-intended password floor for an
+  account protected by password alone; not an active exploit, but a
+  policy gap against the explicit spec (stage 4 feature #61, NIST SP
+  800-63B: "at least 8 characters (15 when the password is the only
+  factor)").
+- **Status:** Fixed
+- **Component/file:** `packages/validation/src/index.ts`
+- **Exact location:** `export const PASSWORD_MIN_LENGTH = 8;`
+- **Problem:** This application has no MFA/TOTP implementation (confirmed
+  in `docs/auth/ARCHITECTURE.md` §1.4: "TOTP MFA ... Not implemented") —
+  password is the sole authentication factor for every account, which is
+  exactly the condition NIST 800-63B ties to the stricter 15-character
+  minimum, not the bare 8-character floor.
+- **Root cause:** The schema used NIST's unconditional floor (8) without
+  accounting for the "password is the only factor" condition that applies
+  to every account in this app today.
+- **Trigger:** Any signup/password-reset/password-change with a password
+  between 8 and 14 characters.
+- **Impact:** Accounts could be created with passwords weaker than the
+  policy this stage's spec requires for a password-only app.
+- **Reproduction steps:** 1. Call `passwordSchema.parse("12345678")` (8
+  chars). 2. Before the fix, this passed.
+- **Expected behavior:** Minimum 15 characters when password is the sole
+  factor.
+- **Actual behavior (before fix):** Minimum was 8.
+- **Why it happens:** See root cause.
+- **Related components:** `apps/web` signup/reset-password/change-password
+  forms (no change needed — they render `PASSWORD_MIN_LENGTH` from the
+  shared constant, not a separate hardcoded number);
+  `packages/validation/src/index.spec.ts`.
+- **Recommended fix (applied):** Raised `PASSWORD_MIN_LENGTH` to `15`.
+  Updated the composition-rule test fixture
+  (`packages/validation/src/index.spec.ts`) from a 12-char to a 20-char
+  all-lowercase string, since it was coincidentally shorter than the new
+  minimum and would otherwise fail for an unrelated reason (length, not
+  composition).
+- **Regression risk:** Low-medium — any existing test fixtures or seed
+  data using an 8–14 character password for signup/reset/change-password
+  will now fail validation; searched all `apps/api/test/*.spec.ts` files
+  for `signUp()`/password fixtures under 15 characters — none found (only
+  login tests use short passwords, which intentionally test wrong-password
+  rejection and never pass through `passwordSchema`).
+- **How to test the fix:** `packages/validation/src/index.spec.ts` — actually
+  run, 8/8 pass, including the updated composition-rule and
+  length-boundary tests.
+
+### BUG-019: Account self-heal only repaired a missing profile, never a missing role; no scheduled job existed to catch an orphaned account that never logs in again
+
+- **Label:** Confirmed bug
+- **Severity:** MEDIUM — an account missing its role would resolve through
+  `PrincipalService` with zero permissions (effectively unusable, not a
+  security hole) rather than being repaired; an account that never logs
+  in again after being left partial had no path back to a complete state.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/principal.service.ts`; (new)
+  `apps/worker/src/processors/account-repair.processor.ts`
+- **Exact location:** `principal.service.ts`'s `resolve()` previously only
+  checked/repaired `prisma.profile.findUnique`, never `userRole`.
+- **Problem:** Stage 4 feature #63 requires "impossible for a user to
+  exist without a profile, a role, or a way to verify," plus "a repair job
+  catches older partial accounts." The transactional `signUp()` prevents
+  new partial accounts; the per-login self-heal only covered a missing
+  profile, not a missing role; and no job existed to repair an account
+  that never logs in again.
+- **Root cause:** The self-heal guard was written for the specific
+  "profile lost to a bug predating the transactional signUp" scenario and
+  was never extended to cover a missing role the same way; no repair job
+  was ever added (only a `cleanup` queue/worker for expired tokens/old
+  sessions existed).
+- **Trigger:** Any user row left without a `UserRole` (e.g. by a bug
+  predating Phase 4's atomic role assignment) or any partial account whose
+  owner never signs in again.
+- **Impact:** A role-less account would authenticate but hold zero
+  permissions on every request; a partial account with no future login has
+  no self-heal path at all.
+- **Reproduction steps:** 1. Manually delete a test user's `UserRole` row. 2. Call `PrincipalService.resolve()` for that user. 3. Before the fix,
+  `roles`/`permissions` stayed empty indefinitely.
+- **Expected behavior:** A missing role is repaired the same way a missing
+  profile is; a scheduled job repairs accounts that never log in.
+- **Actual behavior (before fix):** Missing role was never repaired; no
+  repair job existed.
+- **Why it happens:** See root cause.
+- **Related components:** `apps/api/src/auth/auth.service.ts` `signUp()`
+  (prevention); `apps/worker/src/processors/cleanup.processor.ts` (sibling
+  pattern this job's structure follows).
+- **Recommended fix (applied):** `principal.service.ts` now also detects
+  zero `userRoles` and assigns the default `user` role
+  (`skipDuplicates: true`, idempotent under concurrent requests, same
+  pattern as the existing profile self-heal). Added a new
+  `account-repair` BullMQ queue/worker that scans for any user missing a
+  profile and/or role and repairs both, for accounts that never log in
+  again to trigger the lazy per-login path.
+- **Regression risk:** Low — both changes only ever create a missing row;
+  neither can modify or remove an existing profile/role/permission.
+- **How to test the fix:** `@saas/worker` typecheck passes; full
+  `apps/api` test suite actually run — 20 files, 44 passed, 91 skipped
+  (DB-dependent), 0 failed. Requires manual verification for the repair
+  job's actual output against a real database (no Docker/Postgres
+  available in this environment), and for scheduling it to run
+  periodically (no in-repo scheduler exists for this queue or the
+  pre-existing `cleanup` queue — an external cron or BullMQ repeatable
+  job must enqueue a job).
+
+### BUG-020: Signup verification email sent synchronously in-request with no retry, not through the queue
+
+- **Label:** Confirmed bug
+- **Severity:** LOW — delivery failure was already caught, logged, and
+  recoverable via resend; the gap was the absence of automatic retry
+  before falling back to that manual path.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/auth.service.ts` `sendVerificationEmail()`;
+  `apps/api/src/common/email-queue.ts`
+- **Exact location:** `sendEmail(...)` called with the default `queued =
+false`, and the BullMQ `Queue` had no `defaultJobOptions`.
+- **Problem:** Stage 4 feature #66 requires "Send email through a queue
+  with retries." Verification emails were sent directly via
+  `emailProvider.send()` in-request (no queue, no retry); separately, even
+  the password-reset emails that already went through the queue had no
+  `attempts`/`backoff` configured, so a BullMQ job that failed once was
+  never retried by the worker.
+- **Root cause:** Queuing was deliberately scoped to password-reset only
+  in an earlier phase ("opted in per call site... broadening this to
+  every email type is a larger change than this phase's explicit scope");
+  this stage explicitly requires it for the signup/verification flow. The
+  queue's retry options were simply never set when the queue was first
+  created.
+- **Trigger:** Any transient email-provider/network failure while sending
+  a verification email.
+- **Impact:** A transient failure immediately fell back to "user must
+  manually click resend" instead of being retried automatically first.
+- **Reproduction steps:** 1. Mock the email provider to reject once. 2. Before the fix, `sendVerificationEmail` called `emailProvider.send`
+  directly — one failure, no retry, straight to the failure branch.
+- **Expected behavior:** Delivery is attempted via a queue with automatic
+  retries before the failure path is reached.
+- **Actual behavior (before fix):** No queue, no retry, for verification
+  email specifically; no retry configuration on the queue itself.
+- **Why it happens:** See root cause.
+- **Related components:** `apps/api/test/phase4-signup-verification.integration.spec.ts`
+  (updated to spy on `enqueueEmail` instead of `StubEmailProvider.send`,
+  matching the pattern `phase8-password-reset.integration.spec.ts` already
+  used); `apps/worker/src/processors/email.processor.ts` (the consumer,
+  unchanged — BullMQ's own retry/backoff mechanism handles re-delivery
+  without any processor change).
+- **Recommended fix (applied):** Added `defaultJobOptions: { attempts: 3,
+backoff: { type: "exponential", delay: 5000 } }` to the BullMQ `Queue`
+  in `email-queue.ts` (applies to every job on this queue, including the
+  pre-existing password-reset emails). Changed `sendVerificationEmail`'s
+  `sendEmail(...)` call to pass `queued = true`. Updated the affected test
+  file's helper (`captureNextIssuedToken`) and the delivery-failure test to
+  spy on `enqueueEmail` instead of the provider, since the provider is no
+  longer called in-request for this email type.
+- **Regression risk:** Medium-low — verification email delivery now
+  depends on Redis/the worker process being reachable, same as password
+  reset already did; if the queue's Redis connection itself is down,
+  `enqueueEmail` throws synchronously and is still caught by the existing
+  `sendEmail` try/catch (no new unhandled-failure path). Duplicate-signup
+  notice emails were deliberately left unqueued (out of this stage's
+  explicit scope) to keep the change minimal.
+- **How to test the fix:** Full `apps/api` test suite actually run — 20
+  files, 44 passed, 91 skipped (DB-dependent), 0 failed, including the
+  updated `phase4-signup-verification.integration.spec.ts` (13 tests, all
+  skip cleanly — no DB in this environment) and
+  `phase8-password-reset.integration.spec.ts` (unaffected by the shared
+  `defaultJobOptions` change). Requires manual verification against a
+  real Redis/Postgres for the actual retry behavior.

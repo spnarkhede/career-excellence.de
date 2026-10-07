@@ -1141,6 +1141,171 @@ signed in to Google" on a shared computer). No per-provider "federated
 logout" (e.g. Google's own end-session endpoint) is implemented this phase —
 flagged as a potential future enhancement, not a current requirement.
 
+### `PermissionsGuard` / `@RequirePermission` (`apps/api/src/common/{permissions.guard,require-permission.decorator}.ts`) — Implemented (Phase 10)
+
+1. Declarative NestJS guard pair: `@RequirePermission(name)` attaches a
+   permission name as route metadata via `SetMetadata`; `PermissionsGuard`
+   reads it with `Reflector` and calls `assertPermission(request.principal,
+permission)`. No metadata means no-op (pass through) — a route with no
+   `@RequirePermission` is unaffected, auth-wise, by this guard at all.
+2. Applied via `@UseGuards(SessionGuard, PermissionsGuard)` on a controller
+   class (order matters: `SessionGuard` must run first so
+   `request.principal` exists before `PermissionsGuard` reads it). Used on
+   `ProfileController` this phase.
+3. Calls `assertPermission` from `@saas/authorization` (pre-existing,
+   Phase 3), which itself calls `can(principal, permission)` against the
+   principal's server-resolved `permissions` array.
+4. Receives nothing from the client directly — reads only
+   `request.principal`, which `SessionGuard` populates from
+   `PrincipalService.resolve(userId, sessionId)` (a database join), never
+   from any client-supplied header or body field.
+5. Returns `true` (request proceeds) or throws `ForbiddenError`.
+6. On failure: `ForbiddenError` propagates to `AllExceptionsFilter`, which
+   now maps it to HTTP 403 (fixes BUG-015 — previously it fell through to
+   the generic `Error` branch and returned 500).
+7. Secure: never reads a role/permission from the client — "Never trust
+   roles from the client" (checklist task 2) is structural here, since the
+   only input is `request.principal`, itself derived from a DB join keyed
+   by the verified session.
+8. No inconsistent-state risk — stateless per-request check, no caching.
+
+### `revokeSession` / `unlinkAccount` 404 handling (`apps/api/src/auth/auth.service.ts`, `apps/api/src/auth/oauth/oauth.service.ts`) — Implemented (Phase 10)
+
+1. Object-level ownership checks (checklist task 3: "Object level checks for
+   every route with an ID... Return 404 where existence must stay hidden").
+   `revokeSession(userId, sessionId)` does `prisma.session.updateMany({
+where: { id: sessionId, userId, revokedAt: null } })` — if `count === 0`
+   (session belongs to someone else, is already revoked, or never existed),
+   throws `NotFoundException`, the SAME 404 regardless of which of those
+   three is true. `unlinkAccount` mirrors this for `OauthAccount` rows.
+2. Called by `AuthController.revokeSession`/`OAuthController.unlinkAccount`
+   (both authenticated routes, `userId` from the verified session, never
+   from the request body).
+3. Calls Prisma (`updateMany`/`deleteMany`, both scoped by `userId` in the
+   `where` clause — the ownership check and the mutation are the same
+   atomic operation, not a separate "check-then-act").
+4. Receives a session/provider id from the URL param.
+5. Returns `void` on success.
+6. On failure: `NotFoundException` (404) — deliberately NOT 403, since a 403
+   would leak that the resource exists at all for a different user.
+7. Secure: closes a real pre-existing gap — both methods previously
+   silently no-opped (returned success) whether the resource was owned by
+   someone else or never existed, giving no signal to the caller either way
+   but also never confirming nothing happened.
+8. No inconsistent-state risk — the ownership check and mutation are one
+   atomic `updateMany`/`deleteMany` call, so there's no window between
+   checking ownership and acting on it.
+
+### `requireUser()` / `requirePermission()` (`apps/web/src/lib/require-user.ts`, `apps/admin/src/lib/require-user.ts`) — Implemented (Phase 10)
+
+1. The server-side gate every protected Next.js page must call directly —
+   the "check inside every... page" half of "guards in layers" (checklist
+   task 1), independent of and in addition to the outer middleware layer.
+   Always re-fetches the principal fresh from `GET /auth/me` using the
+   forwarded session cookie (`cache: "no-store"`) — never trusts anything
+   client-supplied. `requirePermission(path, name)` layers a permission
+   check against the SAME server-resolved principal on top.
+2. Called from page components: `apps/web`'s `/dashboard`,
+   `/dashboard/sessions`, `/dashboard/connected-accounts`; `apps/admin`'s
+   `/` (via `requirePermission("/", "users.read")`).
+3. Calls `GET {NEXT_PUBLIC_API_URL}/auth/me`; on a 401, calls
+   `resolveAuthRedirect` (packages/security) to build the login redirect,
+   rather than hand-rolling the decision locally.
+4. Receives the forwarded session cookie only — no client-supplied
+   role/permission data is ever read.
+5. Returns a discriminated `{kind: "ok", principal} | {kind: "error",
+message}` result; the page renders a retry UI on `"error"` rather than
+   crashing.
+6. On failure: a genuine 401 redirects to `/login?next=...`; any OTHER
+   failure (network error, 5xx, malformed body) returns a retryable error
+   state instead of redirecting — a transient outage must never look like
+   a forced logout. A missing permission redirects to `/forbidden`.
+7. Secure: the permission check is against `principal.permissions`, itself
+   sourced from the same DB-joined `PrincipalService.resolve` every API
+   route trusts — apps/web and apps/admin never maintain their own
+   independent notion of a user's roles.
+8. Duplicated near-identically between apps/web and apps/admin (deliberate
+   "smallest safe change" this phase, documented here rather than
+   introducing a new shared package mid-phase) — flagged in
+   `docs/auth/PROGRESS.md`'s open questions as a candidate for a future
+   `@saas/auth-client`-style extraction if a third Next.js app is ever
+   added.
+
+### `isSafeRelativePath` / `safeReturnTo` / `resolveAuthRedirect` (`packages/security/src/index.ts`) — Implemented (Phase 10)
+
+1. The canonical safe-redirect/no-loop logic (checklist tasks 5 and 6).
+   `isSafeRelativePath` decodes exactly once and rejects backslashes,
+   control characters, and any path not starting with exactly one `/`.
+   `safeReturnTo` adds an optional allowlist-prefix check and a fallback
+   (`/dashboard` by default). `resolveAuthRedirect` is a pure decision
+   function formalizing "login never redirects to login" and "signed-out
+   user on a protected page goes to login with returnTo" as one tested
+   invariant rather than two independently-written page implementations.
+2. Used by both apps/web's and apps/admin's `requireUser()` and by the
+   login page's own "already signed in?" check.
+3. Calls nothing external — pure functions, no I/O.
+4. Receives a raw, untrusted `?next=`/`?returnTo=` string.
+5. Returns a validated string (`safeReturnTo`) or a redirect decision
+   (`resolveAuthRedirect`).
+6. On failure (unsafe input): falls back to `/dashboard`, never throws.
+7. Secure: closes the exact malicious-value list from the task's test 2
+   (`https://evil.example`, `//evil.example`, `/\evil.example`,
+   `javascript:alert(1)`, and encoded/double-encoded variants) — see
+   `packages/security/src/index.spec.ts`.
+8. Caught and fixed a real bug in its own first draft: `resolveAuthRedirect`
+   originally let an authenticated visit to `/login?next=/login` redirect
+   right back to `/login`, since `/login` is syntactically "safe." Fixed
+   with an explicit exclusion; see FINDINGS.md.
+
+### `apps/web`/`apps/admin` middleware (`apps/web/src/middleware.ts`, `apps/admin/src/middleware.ts`) — Implemented (Phase 10)
+
+1. The OUTER layer only (checklist task 1) — checks for the presence of a
+   session cookie (under either its unprefixed or `__Host-`-prefixed name)
+   and sets `Cache-Control: no-store` on every protected-path response
+   (checklist task 7, back/forward-after-logout). Explicitly NOT the
+   security boundary: it never validates the cookie's signature or looks up
+   a principal — every page and API handler re-checks independently,
+   precisely because framework middleware has had real bypass bugs
+   (CVE-2025-29927, a forged `x-middleware-subrequest` header).
+2. Runs on every matched request before any page or API route.
+3. Calls nothing — reads only `request.cookies`.
+4. Receives the incoming request's cookies.
+5. Returns a redirect to `/login` (no cookie present) or passes through
+   with `Cache-Control: no-store` added.
+6. On failure (no session cookie on a protected path): redirects to
+   `/login`.
+7. Secure: `apps/web/src/middleware.ts` had BUG-016 — hardcoded the
+   unprefixed cookie name, so it would never have detected a signed-in user
+   in production (where the real cookie is `__Host-`-prefixed). Fixed via a
+   new public env var, `NEXT_PUBLIC_SESSION_COOKIE_NAME`.
+8. `apps/admin/src/middleware.ts` is new this phase — apps/admin had no
+   middleware at all before Phase 10, so the entire app was previously
+   unprotected at this outer layer (though every page still needs its own
+   server-side gate regardless, per item 1's own stated limitation).
+
+### Route-matrix test (`scripts/route-matrix.ts`, `scripts/route-matrix.spec.ts`) — Implemented (Phase 10)
+
+1. Static-analysis-based route discovery (regex over `.controller.ts`/
+   `page.tsx` source) cross-checked against a hand-maintained manifest —
+   the practical proxy for checklist test 1's "route matrix... against
+   anonymous, user, admin and wrong role," since no live database or
+   running server exists in this environment for a real 4-persona HTTP
+   crawl. A route discovered in the code but missing from the manifest
+   fails the test ("unclassified new routes fail the test," verbatim); a
+   manifest entry whose declared guards no longer match the code also
+   fails, catching an accidentally-removed guard.
+2. Run via `pnpm test:scripts`.
+3. Calls nothing external — reads source files from disk only.
+4. Receives no runtime input; discovers handlers/pages from the repo tree.
+5. Returns pass/fail per discovered route and per manifest entry (84
+   assertions total).
+6. On failure: names the specific unclassified or drifted route.
+7. Secure: not itself a security control — a test-infrastructure component
+   that verifies OTHER security controls (guards) are present and declared.
+8. Manually verified to actually catch a regression (not just discover
+   routes): deliberately removed `@UseGuards` from `ProfileController`,
+   confirmed the suite failed, reverted, confirmed 84/84 passed again.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

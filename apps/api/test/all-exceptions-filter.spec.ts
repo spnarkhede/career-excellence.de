@@ -1,4 +1,5 @@
 import { ArgumentsHost, BadRequestException, UnprocessableEntityException } from "@nestjs/common";
+import { ForbiddenError } from "@saas/authorization";
 import { Prisma } from "@saas/database";
 import { describe, expect, it, vi } from "vitest";
 import { AllExceptionsFilter } from "../src/common/all-exceptions.filter.js";
@@ -75,6 +76,19 @@ describe("AllExceptionsFilter", () => {
     expect(status).toHaveBeenCalledWith(500);
     const body = json.mock.calls[0]?.[0] as { message: string };
     expect(body.message).not.toContain("hunter2");
+  });
+
+  // BUG-015 (Phase 10): @saas/authorization's ForbiddenError is a plain
+  // Error, not a Nest HttpException — without a dedicated branch it fell
+  // through to the generic 500 case above instead of ever becoming the 403
+  // every assertPermission call in this codebase is written to produce
+  // (checklist: "403 when forbidden").
+  it("maps @saas/authorization's ForbiddenError to 403, not a generic 500", () => {
+    const { host, status, json } = makeHost();
+    filter.catch(new ForbiddenError(), host);
+    expect(status).toHaveBeenCalledWith(403);
+    const body = json.mock.calls[0]?.[0] as { code: string; message: string };
+    expect(body.code).toBe("FORBIDDEN");
   });
 
   it("sets a Retry-After header when the exception's details carry retryAfterSeconds", () => {

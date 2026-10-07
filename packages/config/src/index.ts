@@ -1,7 +1,14 @@
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
-import { assertNoPublicSecretLeakage } from "./guard";
+import { assertNoPublicSecretLeakage } from "./guard.js";
 
-export { assertNoPublicSecretLeakage } from "./guard";
+export { assertNoPublicSecretLeakage } from "./guard.js";
+
+// Next.js auto-loads .env files; plain Node entrypoints (apps/api, apps/worker) need this.
+const repoRoot = path.resolve(fileURLToPath(import.meta.url), "../../../..");
+loadDotenv({ path: path.join(repoRoot, ".env") });
 
 /**
  * Public variables are safe to expose to browser JavaScript (NEXT_PUBLIC_ prefix).
@@ -12,6 +19,15 @@ export const publicEnvSchema = z.object({
   NEXT_PUBLIC_ADMIN_URL: z.string().url().optional(),
   NEXT_PUBLIC_API_URL: z.string().url(),
   NEXT_PUBLIC_ANALYTICS_WRITE_KEY: z.string().optional().default(""),
+  // The cookie's NAME is not a secret (its value is, and that's HttpOnly —
+  // never readable by this public var or by JS either way); Next.js
+  // middleware needs this to check for the session cookie's PRESENCE.
+  // Must match AUTH_SESSION_COOKIE_NAME's base name (apps/api/src/auth/
+  // cookie-names.ts) — the __Host- prefix, applied whenever the cookie is
+  // Secure with no Domain attribute, is checked for separately by whatever
+  // reads this, since a public env var can't know the server's runtime
+  // secure/domain config.
+  NEXT_PUBLIC_SESSION_COOKIE_NAME: z.string().default("app_session"),
 });
 
 export const privateEnvSchema = z.object({
@@ -46,6 +62,9 @@ export const privateEnvSchema = z.object({
   AUTH_JWT_AUDIENCE: z.string().default("career-excellence-web"),
   AUTH_ACCESS_TOKEN_TTL: z.coerce.number().int().positive().default(900),
   AUTH_REFRESH_TOKEN_TTL: z.coerce.number().int().positive().default(2_592_000),
+  // Verification token lifetime (checklist "Verification expiration... 24 hours
+  // (configurable)"); applies to email verification tokens issued in auth.service.ts.
+  AUTH_VERIFICATION_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(86_400),
   // Idle timeout (checklist "idle timeout... enforced on the server"): a session
   // not used for this long is treated as expired even though its refresh token
   // hasn't reached its own rolling/absolute expiry.

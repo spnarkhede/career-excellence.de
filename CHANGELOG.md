@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-07
+
+### Added
+
+- Declarative `@RequirePermission`/`PermissionsGuard` pair for NestJS routes
+  (`apps/api/src/common/{require-permission.decorator,permissions.guard}.ts`),
+  applied to `ProfileController`.
+- `requireUser()`/`requirePermission()` server-side gates for Next.js pages
+  (`apps/web/src/lib/require-user.ts`, `apps/admin/src/lib/require-user.ts`),
+  delegating the no-loop redirect decision to a new shared
+  `resolveAuthRedirect()` helper.
+- `isSafeRelativePath()`/`safeReturnTo()` in `@saas/security` — the safe
+  return-URL helper (decode once, reject backslash/control-chars/`//`/
+  absolute schemes, optional allowlist, fallback to `/dashboard`).
+- `apps/admin/src/middleware.ts` (new — apps/admin had no middleware at
+  all before this phase) and a matching `/forbidden` page for apps/web.
+- `scripts/route-matrix.ts`/`route-matrix.spec.ts` — static-analysis route
+  discovery cross-checked against a hand-maintained manifest (84
+  assertions); an unclassified new route or a drifted guard fails the test.
+- `apps/api/test/phase10-forged-headers.spec.ts` — confirms `SessionGuard`
+  rejects forged `x-middleware-subrequest`/`x-user-id`/`x-user-role`/
+  `x-principal` headers and an unsigned `alg:none` JWT cookie.
+
+### Changed
+
+- `revokeSession`/`unlinkAccount` now throw `NotFoundException` (404) when
+  the target doesn't exist or belongs to a different user, instead of
+  silently no-opping — closes an object-level access-control gap.
+- `apps/web/src/middleware.ts` now checks for the session cookie under both
+  its unprefixed and `__Host-`-prefixed name, and sets
+  `Cache-Control: no-store` on every protected-path response.
+
+### Fixed
+
+- `BUG-015`: `ForbiddenError` fell through to the generic exception branch
+  and returned HTTP 500 instead of 403.
+- `BUG-016`: `apps/web`'s middleware hardcoded the unprefixed session
+  cookie name, which would never have matched the real `__Host-`-prefixed
+  cookie in a production-shaped deployment, locking out every signed-in
+  user.
+
+### Notes
+
+- Caught and fixed a redirect-loop bug in `resolveAuthRedirect`'s own first
+  draft (`?next=/login` bouncing back to `/login`) before it was ever used
+  in a real page — see FINDINGS.md.
+- No live browser or Postgres in this session — back/forward-button
+  behavior, refresh behavior, and the full deep-link round trip are
+  documented as Requires manual verification, not Confirmed working.
+
 ## [0.10.0] - 2026-10-07
 
 ### Added

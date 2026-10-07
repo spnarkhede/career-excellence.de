@@ -5,21 +5,29 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { Button, FormError, Input, Label } from "@saas/ui";
-import { isAllowedRedirect } from "@saas/security";
+import { resolveAuthRedirect } from "@saas/security";
 import { loginSchema, type LoginInput } from "@saas/validation";
 import { ApiClientError, ApiClientOfflineError, ApiClientTimeoutError } from "@saas/api-client";
 import type { AuthenticatedPrincipal } from "@saas/types";
 import { apiClient } from "../../../lib/api-client";
 import { OAuthButtons } from "../../../components/oauth-buttons";
 
-const DEFAULT_REDIRECT = "/dashboard";
-
+// Checklist "Redirect after login" / "Incorrect redirect destination" /
+// "Redirect rules that cannot loop": delegates to the same shared decision
+// function `requireUser()` builds on (packages/security's
+// resolveAuthRedirect) — this is the "signed in on login -> dashboard" half
+// of the loop-free invariant; requireUser() is the other half.
 function resolveRedirectTarget(searchParams: URLSearchParams): string {
-  const next = searchParams.get("next");
-  // Checklist "Redirect after login" / "Incorrect redirect destination": only ever
-  // follow an allowlisted, same-origin path — never an attacker-supplied `next`.
-  if (!next || !isAllowedRedirect(next, [window.location.origin])) return DEFAULT_REDIRECT;
-  return next;
+  const { redirectTo } = resolveAuthRedirect({
+    isLoginPage: true,
+    requiresAuth: false,
+    isAuthenticated: true,
+    currentPath: "/login",
+    next: searchParams.get("next"),
+  });
+  // isLoginPage + isAuthenticated always produces a non-null target per
+  // resolveAuthRedirect's own (exhaustively tested) logic.
+  return redirectTo!;
 }
 
 function LoginForm() {

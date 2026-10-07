@@ -16,9 +16,10 @@
     "@saas/config": "workspace:*",
     "@saas/contracts": "workspace:*",
     "@saas/design-tokens": "workspace:*",
+    "@saas/security": "workspace:*",
     "@saas/types": "workspace:*",
     "@saas/ui": "workspace:*",
-    "next": "^15.1.2",
+    "next": "^15.2.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
