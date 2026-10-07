@@ -1351,6 +1351,99 @@ message}` result; the page renders a retry UI on `"error"` rather than
 7. Secure: no change to any request/response handling — purely presentation and resilience hardening.
 8. `login`'s own pre-Phase-11 `/auth/me` polling `useEffect` was REMOVED entirely — it now reads `useAuth().status` from the server-resolved `AuthProvider` instead, which is what eliminates the login-page loading flash (checklist items 24/25) rather than just hiding it faster.
 
+### `AUTH_ERROR_CATALOG` (`apps/api/src/common/error-catalog.ts`) — Implemented (Phase 12)
+
+1. A single `Record<code, {status, message, recovery}>` — the
+   machine-checkable half of `docs/auth/ERRORS.md`'s human-readable
+   catalog (checklist task 3: "one mapping layer... to catalog codes").
+   Every code any auth/profile/common route can produce, with its exact
+   message and whether a safe recovery path exists.
+2. Imported by `apps/api/test/{all-exceptions-filter,phase12-error-catalog}.spec.ts`
+   and cross-referenced (not imported) by `docs/auth/ERRORS.md`.
+3. Calls nothing — a pure data module.
+4. N/A — no runtime input.
+5. Returns the catalog object (and the `AuthErrorCode` type derived from
+   its keys).
+6. N/A.
+7. Secure: never includes a value that could leak anything — every
+   message is a fixed, pre-reviewed string.
+8. No inconsistent-state risk — a static, frozen-at-build-time object.
+
+### `recordAuthMetric()` (`packages/observability/src/metrics.ts`) — Implemented (Phase 12)
+
+1. Checklist task 6 ("metrics and alerts"): emits one structured log line
+   per metric event (`{event: "auth_metric", metric, labels}`) — the
+   minimum plumbing a future log-based metrics pipeline (Prometheus/
+   Datadog/CloudWatch) can key off of without this application code
+   needing to change once a backend is actually chosen. **No managed
+   metrics backend is wired in this codebase** — confirmed by direct
+   investigation (no Sentry/OpenTelemetry dependency installed, no init
+   code anywhere), so the alerting layer on top of these events is
+   **Requires configuration**, not implemented.
+2. Called from `apps/api/src/auth/auth.service.ts` (login/OTP/magic-link
+   success+failure, refresh-reuse-detected, email-send-failed) and
+   `apps/api/src/common/all-exceptions.filter.ts` (rate-limited, auth_5xx).
+3. Calls `packages/observability`'s `logger.info(...)`.
+4. Receives a fixed metric name (`AuthMetricName` union) and a small,
+   pre-vetted label object — never a raw request/response body.
+5. Returns `void`.
+6. N/A — never throws; a logging call failing would be a logger-level
+   concern, not this function's.
+7. Secure: deliberately named `metric`, not `code` — `packages/observability`'s
+   logger redacts any field literally named `code` (used elsewhere to
+   scrub OTP codes), which would otherwise silently blank out every
+   metric event.
+8. No inconsistent-state risk — fire-and-forget structured logging, no
+   stored state.
+
+### `AllExceptionsFilter` `ThrottlerException` handling (`apps/api/src/common/all-exceptions.filter.ts`) — Implemented (Phase 12)
+
+1. Checklist "429": maps `@nestjs/throttler`'s default `ThrottlerException`
+   to a clean `{code: "TOO_MANY_REQUESTS", message: "Too many attempts..."}`
+   instead of letting its raw `"ThrottlerException: Too Many Requests"`
+   string (with no `code` at all) pass through the generic `HttpException`
+   branch. Also now records `auth_5xx`/`rate_limited` metrics (see above).
+2. Runs for every request that hits a throttled route's limit, globally
+   (via `ThrottlerGuard`, `apps/api/src/app.module.ts`).
+3. Calls `recordAuthMetric`.
+4. Receives the thrown `ThrottlerException` and the current request
+   (for its `path`, used as a metric label).
+5. Returns the standard `{requestId, code, message, details}` shape, 429.
+6. On failure: N/A — this IS the failure-handling path.
+7. Secure: no change to what's exposed vs. before, just a cleaner shape.
+8. **Known limitation, documented as a Potential risk in FINDINGS.md**:
+   no `Retry-After` header is set for this specific case (the generic
+   `details.retryAfterSeconds` mechanism exists and IS used elsewhere —
+   e.g. account lockout — but `@nestjs/throttler`'s default exception
+   doesn't carry that value without overriding the guard itself, out of
+   this phase's mapping-layer scope).
+
+### `createLogger()` factory (`packages/observability/src/logger.ts`) — Implemented (Phase 12)
+
+1. Refactored the pino logger construction out of `index.ts` into its own
+   module as a factory accepting an optional `DestinationStream`, so
+   `logger.spec.ts` can inject a real in-memory stream and capture ACTUAL
+   log output through the full pipeline (pino's own `redact.paths` + the
+   `deepRedact` hook together) — necessary because pino's default
+   destination writes directly to the fd via sonic-boom, bypassing
+   `process.stdout.write` entirely, so a naive spy-based test would
+   silently capture nothing (caught by this phase's own sanity assertion
+   before it could ship vacuously passing).
+2. The exported `logger` singleton (`createLogger()` with no destination)
+   is used identically everywhere it was before this refactor — no
+   behavior change for any existing caller.
+3. Calls `pino`, `deepRedact`.
+4. Receives an optional destination stream.
+5. Returns a configured pino logger instance.
+6. N/A.
+7. Secure: identical redaction config to before — this is a structural
+   refactor (enabling real testing of the redaction pipeline), not a
+   behavior change.
+8. Also split `logger.ts`/`metrics.ts`/`index.ts` into three files
+   specifically to avoid a circular import (`metrics.ts` needs `logger`;
+   `index.ts` re-exports both) — `check:cycles` confirms 0 circular
+   dependencies after the split.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

@@ -21,7 +21,7 @@ import {
   verificationEmailTemplate,
 } from "@saas/email";
 import { enqueueEmail } from "../common/email-queue.js";
-import { logger } from "@saas/observability";
+import { logger, recordAuthMetric } from "@saas/observability";
 import {
   hashIp,
   hashPassword,
@@ -188,7 +188,10 @@ export class AuthService {
   private async createSession(userId: string, ctx: RequestContext): Promise<IssuedTokens> {
     const refreshToken = generateSecureToken(32);
     const now = Date.now();
-    const refreshExpiresAt = new Date(now + env.AUTH_REFRESH_TOKEN_TTL * 1000);
+    // Rolling idle window (stage 5 #79) — deliberately shorter than, and distinct
+    // from, the absolute ceiling below; a refresh not used within this window
+    // fails even though the absolute lifetime hasn't been reached yet.
+    const refreshExpiresAt = new Date(now + env.AUTH_REFRESH_IDLE_TIMEOUT_SECONDS * 1000);
     // The absolute ceiling is set once, at login, and never extended by rotation —
     // see `issueSession` below.
     const absoluteExpiresAt = new Date(now + env.AUTH_REFRESH_TOKEN_TTL * 1000);
@@ -216,8 +219,13 @@ export class AuthService {
     ctx: RequestContext,
   ): Promise<IssuedTokens> {
     const refreshToken = generateSecureToken(32);
+    // Same rolling idle window as createSession, re-extended on every rotation but
+    // still capped at the family's original, unmoving absolute ceiling.
     const refreshExpiresAt = new Date(
-      Math.min(Date.now() + env.AUTH_REFRESH_TOKEN_TTL * 1000, absoluteExpiresAt.getTime()),
+      Math.min(
+        Date.now() + env.AUTH_REFRESH_IDLE_TIMEOUT_SECONDS * 1000,
+        absoluteExpiresAt.getTime(),
+      ),
     );
 
     const session = await prisma.session.create({
@@ -333,6 +341,7 @@ export class AuthService {
     } catch (err) {
       logger.error({ err, requestId: ctx.requestId, userId }, "Email delivery failed");
       await this.recordAuthEvent(userId, failedEventType, ctx);
+      recordAuthMetric("email_send_failed", { failedEventType });
     }
   }
 
@@ -452,7 +461,11 @@ export class AuthService {
       if (user) {
         await this.recordFailedAttempt(user);
       }
-      throw new UnauthorizedException("Invalid email or password.");
+      recordAuthMetric("login_failure", { reason: "invalid_credentials" });
+      throw new UnauthorizedException({
+        code: "INVALID_CREDENTIALS",
+        message: "Invalid email or password.",
+      });
     }
 
     // Every account-state check below runs ONLY after the password has been
@@ -462,6 +475,7 @@ export class AuthService {
 
     if (user.deletedAt || user.status === "disabled" || user.status === "deleted") {
       await this.recordAuthEvent(user.id, "login_blocked_status", ctx);
+      recordAuthMetric("login_failure", { reason: "account_disabled" });
       throw new ForbiddenException({
         code: "ACCOUNT_DISABLED",
         message: "This account is disabled. Contact support for help.",
@@ -470,6 +484,7 @@ export class AuthService {
 
     if (user.status === "locked" && user.lockedUntil && user.lockedUntil > new Date()) {
       await this.recordAuthEvent(user.id, "login_blocked_locked", ctx);
+      recordAuthMetric("login_failure", { reason: "account_locked" });
       throw new HttpException(
         {
           code: "ACCOUNT_LOCKED",
@@ -482,6 +497,7 @@ export class AuthService {
 
     if (user.status === "pending_verification") {
       await this.recordAuthEvent(user.id, "login_blocked_unverified", ctx);
+      recordAuthMetric("login_failure", { reason: "email_not_verified" });
       throw new ForbiddenException({
         code: "EMAIL_NOT_VERIFIED",
         message: "Please verify your email address before signing in.",
@@ -517,6 +533,7 @@ export class AuthService {
 
     const tokens = await this.createSession(user.id, ctx);
     await this.recordAuthEvent(user.id, "login_succeeded", ctx);
+    recordAuthMetric("login_success");
 
     return { ...tokens, userId: user.id };
   }
@@ -546,7 +563,10 @@ export class AuthService {
     const session = await prisma.session.findUnique({ where: { refreshTokenHash } });
 
     if (!session) {
-      throw new UnauthorizedException("Session expired or revoked. Please sign in again.");
+      throw new UnauthorizedException({
+        code: "SESSION_EXPIRED",
+        message: "Session expired or revoked. Please sign in again.",
+      });
     }
 
     if (session.revokedAt) {
@@ -573,11 +593,24 @@ export class AuthService {
         data: { revokedAt: new Date(), revokedReason: "reuse_detected" },
       });
       await this.recordAuthEvent(session.userId, "refresh_token_reuse_detected", ctx);
-      throw new UnauthorizedException("Session expired or revoked. Please sign in again.");
+      // Task 6 ("refresh reuse detections" metric/alert): a distinct metric
+      // event from plain session expiry below, even though both currently
+      // produce the identical user-facing message/code (checklist: the
+      // DETECTION itself must be observable even when the response can't
+      // safely say "someone replayed your token" without tipping off an
+      // attacker who IS that someone).
+      recordAuthMetric("refresh_reuse_detected");
+      throw new UnauthorizedException({
+        code: "SESSION_REVOKED",
+        message: "Session expired or revoked. Please sign in again.",
+      });
     }
 
     if (isExpired(session.expiresAt) || isExpired(session.absoluteExpiresAt)) {
-      throw new UnauthorizedException("Session expired or revoked. Please sign in again.");
+      throw new UnauthorizedException({
+        code: "SESSION_EXPIRED",
+        message: "Session expired or revoked. Please sign in again.",
+      });
     }
 
     return this.rotateAndRecord(session, ctx);
@@ -790,13 +823,18 @@ export class AuthService {
       : false;
     if (!valid) {
       await this.recordAuthEvent(userId, "password_change_failed", ctx);
-      throw new UnauthorizedException("Current password is incorrect.");
+      throw new UnauthorizedException({
+        code: "CURRENT_PASSWORD_INCORRECT",
+        message: "Current password is incorrect.",
+      });
     }
 
     if (env.FEATURE_BREACHED_PASSWORD_CHECK && (await isPasswordBreached(input.newPassword))) {
-      throw new BadRequestException(
-        "This password has appeared in a known data breach. Please choose a different one.",
-      );
+      throw new BadRequestException({
+        code: "PASSWORD_BREACHED",
+        message:
+          "This password has appeared in a known data breach. Please choose a different one.",
+      });
     }
 
     const passwordHash = await hashPassword(input.newPassword);
@@ -868,7 +906,11 @@ export class AuthService {
     // Identical message for "no such user," "no live code," "expired," "too many
     // attempts," and "wrong code" — none of these are distinguishable from outside.
     if (!user || user.deletedAt) {
-      throw new UnauthorizedException("Invalid or expired code.");
+      recordAuthMetric("login_failure", { reason: "otp_invalid_or_expired" });
+      throw new UnauthorizedException({
+        code: "OTP_INVALID_OR_EXPIRED",
+        message: "Invalid or expired code.",
+      });
     }
 
     const record = await prisma.oneTimeToken.findFirst({
@@ -877,7 +919,11 @@ export class AuthService {
     });
 
     if (!record || isExpired(record.expiresAt) || record.attempts >= MAX_OTP_ATTEMPTS) {
-      throw new UnauthorizedException("Invalid or expired code.");
+      recordAuthMetric("login_failure", { reason: "otp_invalid_or_expired" });
+      throw new UnauthorizedException({
+        code: "OTP_INVALID_OR_EXPIRED",
+        message: "Invalid or expired code.",
+      });
     }
 
     if (record.tokenHash !== hashToken(input.code)) {
@@ -885,7 +931,11 @@ export class AuthService {
         where: { id: record.id },
         data: { attempts: { increment: 1 } },
       });
-      throw new UnauthorizedException("Invalid or expired code.");
+      recordAuthMetric("login_failure", { reason: "otp_invalid_or_expired" });
+      throw new UnauthorizedException({
+        code: "OTP_INVALID_OR_EXPIRED",
+        message: "Invalid or expired code.",
+      });
     }
 
     // Atomic consume: the WHERE clause re-checks `usedAt: null` at the moment of the
@@ -898,7 +948,11 @@ export class AuthService {
       data: { usedAt: new Date() },
     });
     if (consumed.count === 0) {
-      throw new UnauthorizedException("Invalid or expired code.");
+      recordAuthMetric("login_failure", { reason: "otp_invalid_or_expired" });
+      throw new UnauthorizedException({
+        code: "OTP_INVALID_OR_EXPIRED",
+        message: "Invalid or expired code.",
+      });
     }
 
     if (existingSessionId) {
@@ -910,6 +964,7 @@ export class AuthService {
 
     const tokens = await this.createSession(user.id, ctx);
     await this.recordAuthEvent(user.id, "otp_login_succeeded", ctx);
+    recordAuthMetric("login_success");
     return { ...tokens, userId: user.id };
   }
 
@@ -955,10 +1010,18 @@ export class AuthService {
     const record = await prisma.oneTimeToken.findUnique({ where: { tokenHash } });
 
     if (!record || record.purpose !== "magic_link" || record.usedAt) {
-      throw new UnauthorizedException("This sign-in link is invalid or has already been used.");
+      recordAuthMetric("login_failure", { reason: "magic_link_invalid" });
+      throw new UnauthorizedException({
+        code: "MAGIC_LINK_INVALID",
+        message: "This sign-in link is invalid or has already been used.",
+      });
     }
     if (isExpired(record.expiresAt)) {
-      throw new UnauthorizedException("This sign-in link has expired.");
+      recordAuthMetric("login_failure", { reason: "magic_link_expired" });
+      throw new UnauthorizedException({
+        code: "MAGIC_LINK_EXPIRED",
+        message: "This sign-in link has expired.",
+      });
     }
 
     // Same atomic-consume guard as verifyOtp above — a 32-byte token has no
@@ -969,7 +1032,11 @@ export class AuthService {
       data: { usedAt: new Date() },
     });
     if (consumed.count === 0) {
-      throw new UnauthorizedException("This sign-in link is invalid or has already been used.");
+      recordAuthMetric("login_failure", { reason: "magic_link_invalid" });
+      throw new UnauthorizedException({
+        code: "MAGIC_LINK_INVALID",
+        message: "This sign-in link is invalid or has already been used.",
+      });
     }
 
     if (existingSessionId) {
@@ -981,6 +1048,7 @@ export class AuthService {
 
     const tokens = await this.createSession(record.userId, ctx);
     await this.recordAuthEvent(record.userId, "magic_link_login_succeeded", ctx);
+    recordAuthMetric("login_success");
     return { ...tokens, userId: record.userId };
   }
 
@@ -1087,7 +1155,10 @@ export class AuthService {
       const decoded = jwt.decode(token, { complete: true });
       kid = typeof decoded?.header.kid === "string" ? decoded.header.kid : undefined;
     } catch {
-      throw new UnauthorizedException("Invalid or expired session.");
+      throw new UnauthorizedException({
+        code: "INVALID_TOKEN",
+        message: "Invalid or expired session.",
+      });
     }
 
     const publicKey =
@@ -1097,7 +1168,10 @@ export class AuthService {
           ? env.AUTH_JWT_PREVIOUS_PUBLIC_KEY
           : null;
     if (!publicKey) {
-      throw new UnauthorizedException("Invalid or expired session.");
+      throw new UnauthorizedException({
+        code: "INVALID_TOKEN",
+        message: "Invalid or expired session.",
+      });
     }
 
     try {
@@ -1111,8 +1185,14 @@ export class AuthService {
         clockTolerance: JWT_CLOCK_TOLERANCE_SECONDS,
       }) as { sub: string; sid: string };
       return { userId: payload.sub, sessionId: payload.sid };
-    } catch {
-      throw new UnauthorizedException("Invalid or expired session.");
+    } catch (err) {
+      // Stage 5 #76/#96: a distinct code for "expired" vs. every other
+      // rejection (bad signature, wrong issuer/audience, malformed, alg
+      // mismatch) so the client knows whether to attempt a silent refresh
+      // (TOKEN_EXPIRED) or must clear state and re-authenticate (INVALID_TOKEN)
+      // — never a refresh loop for a token that will never verify.
+      const code = err instanceof jwt.TokenExpiredError ? "TOKEN_EXPIRED" : "INVALID_TOKEN";
+      throw new UnauthorizedException({ code, message: "Invalid or expired session." });
     }
   }
 }

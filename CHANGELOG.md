@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-07
+
+### Added
+
+- `docs/auth/ERRORS.md` — the full error catalog: response shape, mapping
+  layer, recovery paths, logging/scrubbing, metrics/alerts, and all 9
+  per-error questions answered for every HTTP status family and every
+  named error code.
+- `apps/api/src/common/error-catalog.ts` (`AUTH_ERROR_CATALOG`) — the
+  machine-checkable counterpart to ERRORS.md; tests assert real thrown
+  exceptions match it.
+- `packages/observability/src/metrics.ts` (`recordAuthMetric`) — structured
+  log-based metric events: `login_failure`, `login_success`,
+  `rate_limited`, `refresh_reuse_detected`, `auth_5xx`, `email_send_failed`.
+- `AllExceptionsFilter` now maps `ThrottlerException` (429) to a clean
+  `TOO_MANY_REQUESTS` code/message instead of leaking
+  `"ThrottlerException: Too Many Requests"` with no code at all.
+- `apps/api/test/phase12-error-catalog.spec.ts`,
+  `packages/observability/src/logger.spec.ts` (a real log-capture test
+  confirming no password/token/OTP/cookie value ever reaches the actual
+  log stream).
+
+### Fixed
+
+- `BUG-025`: six auth exceptions (wrong password, session reuse/expiry,
+  wrong current password, wrong OTP code ×4, invalid/expired magic link
+  ×2) threw with no machine-readable `code`, falling back to a generic
+  status-name code that made them indistinguishable from each other and
+  from an unrelated 401.
+
+### Notes
+
+- No managed metrics backend (Prometheus/Datadog) or error tracker
+  (Sentry) is wired in this codebase — `recordAuthMetric` and the
+  scrubbing-safe logging are the plumbing; alerting thresholds on top are
+  **Requires configuration**.
+- 429 responses still don't carry a `Retry-After` header (would need
+  overriding `ThrottlerGuard` itself, out of this phase's mapping-layer
+  scope) — documented as a Potential risk in FINDINGS.md.
+
 ## [0.12.0] - 2026-10-07
 
 ### Added

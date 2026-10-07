@@ -1,15 +1,17 @@
 import { ArgumentsHost, BadRequestException, UnprocessableEntityException } from "@nestjs/common";
+import { ThrottlerException } from "@nestjs/throttler";
 import { ForbiddenError } from "@saas/authorization";
 import { Prisma } from "@saas/database";
 import { describe, expect, it, vi } from "vitest";
 import { AllExceptionsFilter } from "../src/common/all-exceptions.filter.js";
+import { AUTH_ERROR_CATALOG } from "../src/common/error-catalog.js";
 
-function makeHost() {
+function makeHost(path = "/test") {
   const json = vi.fn();
   const setHeader = vi.fn();
   const status = vi.fn().mockReturnValue({ json });
   const response = { status, setHeader };
-  const request = { requestId: "req-1" };
+  const request = { requestId: "req-1", path };
   const host = {
     switchToHttp: () => ({
       getResponse: () => response,
@@ -98,5 +100,59 @@ describe("AllExceptionsFilter", () => {
       host,
     );
     expect(setHeader).toHaveBeenCalledWith("Retry-After", "42");
+  });
+
+  // Phase 12 checklist "429": @nestjs/throttler's default exception must never
+  // leak its own class name ("ThrottlerException: ...") or go uncoded.
+  it("maps ThrottlerException to a clean 429 with a catalog code and message, not the raw class name", () => {
+    const { host, status, json } = makeHost("/auth/login");
+    filter.catch(new ThrottlerException(), host);
+    expect(status).toHaveBeenCalledWith(429);
+    const body = json.mock.calls[0]?.[0] as { code: string; message: string };
+    expect(body.code).toBe("TOO_MANY_REQUESTS");
+    expect(body.message).not.toContain("ThrottlerException");
+    expect(body.message).toBe(AUTH_ERROR_CATALOG.TOO_MANY_REQUESTS.message);
+  });
+
+  // Phase 12 checklist "no stack traces, SQL, raw provider errors or internal
+  // IDs in production" — explicit test, even though the filter never branches
+  // on NODE_ENV at all (every environment gets the same safe shape).
+  it("never includes a stack trace or internal error identifiers in the response body, regardless of environment", () => {
+    const { host, json } = makeHost();
+    const err = new Error("secret internal detail");
+    err.stack =
+      "Error: secret internal detail\n    at someInternalFunction (/app/src/secret.ts:42:1)";
+    filter.catch(err, host);
+    const body = json.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(JSON.stringify(body)).not.toContain("someInternalFunction");
+    expect(JSON.stringify(body)).not.toContain("/app/src/secret.ts");
+    expect(body.stack).toBeUndefined();
+  });
+
+  // Phase 12 task 3 ("one mapping layer... to catalog codes") / DONE WHEN
+  // "ERRORS.md matches the code": every entry actually reachable through this
+  // filter's own branches must produce EXACTLY its catalog-documented
+  // status+message — this is the machine-checkable half of that promise.
+  it("ForbiddenError's thrown shape matches its catalog entry exactly", () => {
+    const { host, status, json } = makeHost();
+    filter.catch(new ForbiddenError(), host);
+    expect(status).toHaveBeenCalledWith(AUTH_ERROR_CATALOG.FORBIDDEN.status);
+    const body = json.mock.calls[0]?.[0] as { code: string; message: string };
+    expect(body.code).toBe("FORBIDDEN");
+  });
+
+  it("the Prisma-unreachable 503 shape matches its catalog entry exactly", () => {
+    const { host, status, json } = makeHost();
+    filter.catch(
+      new Prisma.PrismaClientKnownRequestError("unreachable", {
+        code: "P1001",
+        clientVersion: "6.1.0",
+      }),
+      host,
+    );
+    expect(status).toHaveBeenCalledWith(AUTH_ERROR_CATALOG.SERVICE_UNAVAILABLE.status);
+    const body = json.mock.calls[0]?.[0] as { code: string; message: string };
+    expect(body.code).toBe("SERVICE_UNAVAILABLE");
+    expect(body.message).toBe(AUTH_ERROR_CATALOG.SERVICE_UNAVAILABLE.message);
   });
 });

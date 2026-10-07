@@ -1041,8 +1041,8 @@ start`) was unaffected, which is specifically why this went undetected
 ### BUG-024: a wrong password/OTP code/expired magic link returned HTTP 401, which the API client misread as "session expired" and hard-redirected away from the error
 
 - **Label:** Confirmed bug
-- **Severity:** HIGH — every wrong-password login attempt, wrong OTP
-  code, and expired/used magic link silently redirected the user to
+- **Severity:** HIGH — every wrong-password login attempt, wrong OTP code,
+  and expired/used magic link silently redirected the user to
   `/login?reason=session_expired` instead of showing the actual "incorrect
   email or password" / "invalid or expired code" message — a confirmed,
   reproducible, user-facing correctness bug on three of this app's most
@@ -1123,6 +1123,122 @@ start`) was unaffected, which is specifically why this went undetected
   summary receives focus and announces via role=alert" test — actually
   run, mocks `/auth/login` to return 401 and confirms the error renders
   in place rather than the page navigating away.
+
+### BUG-025: six auth exceptions threw with no machine-readable `code`, falling back to a generic status-name code
+
+- **Label:** Confirmed bug
+- **Severity:** MEDIUM — each of these responses was still a correct HTTP
+  status with a correct, specific, human-readable `message` (nothing was
+  user-facing-broken), but the `code` field — the one meant to be
+  machine-readable and stable across message-copy changes — fell back to
+  `AllExceptionsFilter`'s generic `HttpStatus[status]` default (e.g.
+  `"UNAUTHORIZED"`) instead of a specific catalog code, making it
+  impossible for a client (or a future metrics/alerting rule keyed on
+  `code`) to distinguish "wrong password" from "session expired" from
+  "wrong OTP code" from the response shape alone — all three were
+  `{code: "UNAUTHORIZED", ...}` with only the `message` string differing.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/auth.service.ts` — `login()`
+  (wrong credentials), `refresh()` (two sites: nonexistent session, plain
+  expiry), `changePassword()` (wrong current password), `verifyOtp()`
+  (four sites), `verifyMagicLink()` (two sites).
+- **Exact location:** Every one of these called `throw new
+UnauthorizedException("some message")` with a bare string — the ONE
+  shape `AllExceptionsFilter`'s `HttpException` branch cannot pull a
+  specific `code` out of (its `code = typeof b.code === "string" ? ...`
+  logic only fires when the response body is an OBJECT with a `code` key,
+  not a plain string).
+- **Problem:** A bare-string `UnauthorizedException` is syntactically
+  valid and produces a correct status+message, so this was never
+  "broken" in any test that only asserted the status code or the message
+  text (which is most of this codebase's existing auth tests) — only a
+  test that specifically asserted the `code` field would have caught it,
+  and none did until this phase.
+- **Root cause:** Earlier phases (5 through 9) wrote these exception
+  throws following the convention used for messages that genuinely had no
+  reason to be machine-distinguishable at the time they were written
+  (e.g. `login()`'s wrong-password message long predates this phase's
+  error-catalog work) — the object-literal `{code, message}` shape was
+  used inconsistently, present on SOME sibling throws in the very same
+  functions (`ACCOUNT_DISABLED`, `ACCOUNT_LOCKED`, `EMAIL_NOT_VERIFIED`
+  already had codes) but not others right next to them.
+- **Trigger:** A wrong password, wrong OTP code, expired/reused refresh
+  token, expired/used magic link, or wrong current password on an
+  authenticated password change.
+- **Impact:** No user-facing impact (the message was always correct and
+  specific). The impact is entirely on anything that consumes `code`
+  programmatically: this phase's own new `recordAuthMetric` calls at these
+  sites now have a specific reason to attach as a label precisely because
+  this was fixed alongside them; a hypothetical client that branched on
+  `error.code` (rather than matching message text, which is fragile
+  across i18n/copy changes) would previously have been unable to
+  distinguish these cases.
+- **Reproduction steps (of the bug, before the fix):**
+  1. Call `POST /auth/login` with a wrong password. 2. Observe
+     `{code: "UNAUTHORIZED", message: "Invalid email or password."}` — no
+     way to distinguish this from a stale-session 401 by `code` alone.
+- **Expected behavior:** Every auth failure with a distinct, documented
+  cause has its own catalog `code`.
+- **Actual behavior (before fix):** Six sites (ten throw statements) all
+  degraded to the generic `"UNAUTHORIZED"` fallback.
+- **Why it happens:** See root cause.
+- **Related components:** `apps/api/src/common/error-catalog.ts` (new
+  this phase) now documents every one of these as its own named entry
+  (`INVALID_CREDENTIALS`, `SESSION_EXPIRED`, `SESSION_REVOKED`,
+  `CURRENT_PASSWORD_INCORRECT`, `OTP_INVALID_OR_EXPIRED`,
+  `MAGIC_LINK_INVALID`/`MAGIC_LINK_EXPIRED`), and
+  `docs/auth/ERRORS.md`'s catalog table cross-references each one's exact
+  source.
+- **Recommended fix (applied):** Changed each bare-string
+  `UnauthorizedException("...")` to `UnauthorizedException({code: "...",
+message: "..."})`, using the exact pre-existing message text unchanged
+  (no user-facing copy change) — plus a `recordAuthMetric(...)` call
+  alongside each one, added as part of this same phase's metrics work
+  (task 6), not a separate change.
+- **Regression risk:** None — the HTTP status and message text are
+  byte-for-byte unchanged; only the `code` field, which was previously the
+  uninformative generic fallback, is now populated. Every existing test
+  asserting status/message (phase5/6/7/8 integration specs) continues to
+  pass unmodified.
+- **How to test the fix:** `apps/api/test/phase12-error-catalog.spec.ts`
+  — actually run (3 of its 6 tests are DB-dependent and skip cleanly in
+  this environment; the 3 pure catalog-shape tests run for real and pass).
+
+### Potential risk: 429 responses never carry a Retry-After header
+
+- **Label:** Potential risk (not a bug — a documented, deliberate scope
+  limit)
+- **Severity:** LOW — the 429 response itself is now correct and clean
+  (fixed this phase, see the main checklist entry), just without the one
+  optional header that would let a well-behaved client know exactly how
+  long to wait rather than guessing/backing off generically.
+- **Status:** Requires manual verification (not attempted — see below)
+- **Component/file:** `apps/api/src/common/all-exceptions.filter.ts`
+  (`ThrottlerException` branch, new this phase)
+- **Problem:** `AllExceptionsFilter` already has a generic `Retry-After`
+  mechanism (reads `details.retryAfterSeconds` off any exception, used
+  today by `ACCOUNT_LOCKED`'s 423 response), but `@nestjs/throttler`'s
+  default `ThrottlerException` carries no such value — computing a real
+  "seconds until this specific client's window resets" would require
+  overriding `ThrottlerGuard` itself to read back the current hit-count/
+  TTL from `RedisThrottlerStorage` and attach it to the thrown exception,
+  which is a change to the GUARD, not the exception filter, and was
+  judged out of this phase's scope ("one mapping layer from provider and
+  database errors to catalog codes" — the throttler's OWN internal state
+  isn't a provider/database error to map, it's this application's own
+  rate-limiting mechanism).
+- **Impact:** A throttled client has no machine-readable signal for how
+  long to back off; it must guess or use a fixed client-side backoff.
+  Low severity because every throttled route in this codebase already has
+  a short, well-known window (documented per-route via `@Throttle()`
+  decorators), so a reasonable client-side fixed backoff is a workable
+  stopgap.
+- **Recommended fix (not applied this phase):** Override `ThrottlerGuard`
+  to attach the real remaining-TTL to a custom exception (or to the
+  response directly via `res.setHeader` inside the guard itself, bypassing
+  the exception path entirely) — a future phase's explicit task, not
+  squeezed into this one's documentation/mapping-layer scope.
+- **How to test:** N/A — not implemented, so nothing to test yet.
 
 ### BUG-015: `ForbiddenError` fell through to the generic exception branch and returned HTTP 500 instead of 403
 

@@ -1,8 +1,9 @@
 import type { Request, Response } from "express";
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from "@nestjs/common";
+import { ThrottlerException } from "@nestjs/throttler";
 import { ForbiddenError } from "@saas/authorization";
 import { Prisma } from "@saas/database";
-import { logger } from "@saas/observability";
+import { logger, recordAuthMetric } from "@saas/observability";
 
 // Prisma error codes that indicate the database itself is unreachable/misconfigured,
 // as opposed to a normal query-level failure (constraint violation, not found, etc.) —
@@ -24,7 +25,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
     let message = "An unexpected error occurred.";
     let details: Record<string, unknown> | undefined;
 
-    if (exception instanceof HttpException) {
+    if (exception instanceof ThrottlerException) {
+      // Phase 12 (checklist "429" / task 6 "429 rate" metric): @nestjs/throttler's
+      // default exception leaks its own class name into the message
+      // ("ThrottlerException: Too Many Requests") and carries no `code` at
+      // all — give it the same clean shape as every other catalog entry
+      // instead of letting the generic HttpException branch below pass that
+      // raw string straight through.
+      status = HttpStatus.TOO_MANY_REQUESTS;
+      code = "TOO_MANY_REQUESTS";
+      message = "Too many attempts. Please wait a moment and try again.";
+      recordAuthMetric("rate_limited", { path: request.path ?? "" });
+    } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       const body = exception.getResponse();
       code = HttpStatus[status] ?? "ERROR";
@@ -68,6 +80,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
       details && typeof details.retryAfterSeconds === "number" ? details.retryAfterSeconds : null;
     if (retryAfterSeconds !== null) {
       response.setHeader("Retry-After", String(retryAfterSeconds));
+    }
+
+    // Task 6 ("5xx on auth routes" metric/alert): scoped to /auth so a 5xx
+    // from an unrelated route doesn't pollute this specific alert signal.
+    const requestPath = request.path ?? "";
+    if (status >= 500 && requestPath.startsWith("/auth")) {
+      recordAuthMetric("auth_5xx", { path: requestPath, status: String(status) });
     }
 
     response.status(status).json({ requestId, code, message, details });
