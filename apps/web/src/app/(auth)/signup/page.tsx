@@ -13,6 +13,7 @@ import {
 } from "@saas/validation";
 import { ApiClientError } from "@saas/api-client";
 import { apiClient } from "../../../lib/api-client";
+import { OAuthButtons } from "../../../components/oauth-buttons";
 
 const STRENGTH_BAR_COLOR = [
   "bg-muted",
@@ -99,6 +100,8 @@ export default function SignUpPage() {
       <Button type="submit" disabled={isSubmitting}>
         {isSubmitting ? "Creating account…" : "Sign up"}
       </Button>
+
+      <OAuthButtons mode="login" />
     </form>
   );
 }

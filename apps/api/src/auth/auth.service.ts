@@ -143,7 +143,10 @@ const JWT_CLOCK_TOLERANCE_SECONDS = 5;
 
 @Injectable()
 export class AuthService {
-  private async recordAuthEvent(
+  // Public so OAuthService (Phase 9) can log its own event types through the
+  // one shared implementation, rather than duplicating the ipHash/metadata
+  // handling.
+  async recordAuthEvent(
     userId: string | null,
     type: string,
     ctx: RequestContext,
@@ -1005,6 +1008,30 @@ export class AuthService {
   /** "Log out of all devices" (checklist item 6) — unlike `revokeOtherSessions`,
    * this also revokes the CALLING session, since the intent here is explicitly to
    * end every session including this one, not to keep the current one alive. */
+  /**
+   * Issues a session for a user already resolved by some OTHER flow (Phase 9:
+   * OAuth) — same session-fixation handling (discard whatever session the
+   * caller's current cookie pointed at) and session-creation call sequence as
+   * `login`/`verifyOtp`/`verifyMagicLink`, factored out here so a new sign-in
+   * mechanism never has to re-implement it.
+   */
+  async issueSessionForUser(
+    userId: string,
+    ctx: RequestContext,
+    eventType: string,
+    existingSessionId?: string | null,
+  ): Promise<IssuedTokens & { userId: string }> {
+    if (existingSessionId) {
+      await prisma.session.updateMany({
+        where: { id: existingSessionId, revokedAt: null },
+        data: { revokedAt: new Date(), revokedReason: "superseded_by_new_login" },
+      });
+    }
+    const tokens = await this.createSession(userId, ctx);
+    await this.recordAuthEvent(userId, eventType, ctx);
+    return { ...tokens, userId };
+  }
+
   async logoutAllDevices(userId: string, ctx: RequestContext): Promise<void> {
     await prisma.session.updateMany({
       where: { userId, revokedAt: null },

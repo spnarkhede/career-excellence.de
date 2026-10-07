@@ -59,7 +59,7 @@ import { SessionGuard } from "./session.guard.js";
 const env = loadPrivateEnv();
 const cookieDomain = env.API_COOKIE_DOMAIN || undefined;
 
-function requestContext(req: Request) {
+export function requestContext(req: Request) {
   return {
     ipAddress: req.ip ?? null,
     userAgent: req.get("user-agent") ?? null,
@@ -67,7 +67,7 @@ function requestContext(req: Request) {
   };
 }
 
-function setSessionCookies(res: Response, tokens: IssuedTokens) {
+export function setSessionCookies(res: Response, tokens: IssuedTokens) {
   res.cookie(
     sessionCookieName,
     tokens.accessToken,
@@ -106,7 +106,7 @@ function setSessionCookies(res: Response, tokens: IssuedTokens) {
   });
 }
 
-function clearSessionCookies(res: Response) {
+export function clearSessionCookies(res: Response) {
   res.clearCookie(sessionCookieName, { domain: cookieDomain, path: "/" });
   res.clearCookie(refreshCookieName, { domain: cookieDomain, path: "/" });
   res.clearCookie(csrfCookieName, { domain: cookieDomain, path: "/" });

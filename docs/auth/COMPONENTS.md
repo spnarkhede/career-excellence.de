@@ -976,6 +976,171 @@ email.processor.ts`) instead of sending it synchronously in-request —
    allowlist-checked.
 8. No inconsistent-state risk — purely client-side rendering logic.
 
+### `OAuthProviderAdapter` registry — Google/Microsoft/GitHub/Facebook/Apple/generic (`packages/auth/src/oauth/*.ts`) — Implemented
+
+1. One module per provider behind a single shared interface
+   (`{ name, callbackMethod, buildAuthorizationUrl, resolveIdentity }`), built
+   with PKCE (S256) on every provider and full OIDC ID-token validation
+   (signature via JWKS, issuer, audience, expiry, nonce) for the OIDC
+   providers (Google, Microsoft, Apple, generic); GitHub and Facebook (plain
+   OAuth2, no ID token) instead call a userinfo REST endpoint and apply their
+   own email-trust rule. The sixth, "any other provider" slot is a single
+   OIDC-discovery-driven adapter (`generic-oidc.ts`), not a hardcoded sixth
+   named provider — proving the interface genuinely generalizes.
+2. Called by `OAuthService` (`buildOAuthProviderRegistry`).
+3. Calls `fetch` (token exchange, userinfo), `jose` (`jwtVerify`,
+   `createRemoteJWKSet`, `SignJWT`/`importPKCS8` for Apple's client-secret
+   JWT).
+4. Receives per-provider client credentials from env (see
+   `packages/config/src/index.ts`); `resolveIdentity` receives the
+   authorization code, redirect URI, PKCE verifier, and (OIDC only) nonce.
+5. Returns a normalized `ExternalIdentity { providerAccountId, email,
+emailVerified, displayName }`; throws `OAuthProviderError` (a stable
+   `code`, never the provider's raw error text) on any failure.
+6. On failure: every adapter throws the same error TYPE regardless of which
+   specific thing failed (exchange, missing token, signature, issuer,
+   audience, nonce) — the caller (`OAuthService`) decides what to show the
+   user, the adapter never does.
+7. Secure: `emailVerified` is the sole signal the rest of the app trusts to
+   decide whether an email can anchor account creation/matching — Microsoft
+   always reports `false` (checklist "do not trust the email claim for
+   linking"), GitHub reports `false` whenever there's no primary+verified
+   address, Facebook reports `false` only when no email is returned at all.
+   No adapter ever logs a raw access/ID token.
+8. **Caught-before-shipping note**: the controller's `mode=link` session
+   check initially used a bare `jwt.decode()` (no signature verification) to
+   read the calling user's id from their session cookie before this was
+   caught in review and replaced with `AuthService.verifyAccessToken` (full
+   signature/claims verification) — see FINDINGS.md BUG-014. No inconsistent-
+   state risk in the shipped code; flagged here because this class of mistake
+   is exactly the kind AUTH_RULES.md exists to catch.
+
+### `verifyIdToken` / JWKS resolution (`packages/auth/src/oauth/id-token.ts`) — Implemented
+
+1. Shared full-OIDC-validation helper (signature + issuer + audience + expiry
+   - nonce) used by Google/Apple/generic directly, and by Microsoft (which
+     validates issuer manually against its own tenant claim) via the same
+     underlying memoized JWKS resolver (`getJwks`) rather than its own separate
+     `createRemoteJWKSet` instance — keeping exactly one cached fetcher per
+     jwksUri across every provider, not one per adapter.
+2. Called by every OIDC adapter's `resolveIdentity`.
+3. Calls `jose`'s `jwtVerify`/`createRemoteJWKSet`.
+4. Receives the raw ID token, jwksUri, expected issuer(s)/audience, and an
+   optional nonce.
+5. Returns the verified `JWTPayload`; throws `OAuthProviderError` on any
+   validation failure.
+6. On failure: a single generic "ID token signature/claims validation
+   failed" / "nonce did not match" — never reveals which specific claim check
+   tripped.
+7. Secure: this is the literal "full ID token validation (signature, issuer,
+   audience, expiry, nonce)" checklist requirement — `algorithms` is
+   implicitly constrained by `jose`'s JWKS-key-type matching (a JWKS entry
+   has one key type/algorithm; there is no "alg: none" path through a remote
+   key set at all).
+8. No inconsistent-state risk — pure verification, no writes.
+
+### `OAuthService` — account resolution, linking, pending-email flow (`apps/api/src/auth/oauth/oauth.service.ts`) — Implemented
+
+1. The orchestration layer: resolves an `ExternalIdentity` to a signed-in
+   session, a newly linked account, a pending-email-verification redirect, or
+   a typed error — implementing every account-linking rule in the checklist
+   (identity matched on provider+providerAccountId never email; email
+   collision never auto-links; unverified provider emails never link;
+   provider identity collision shows a clear error; linking requires an
+   authenticated caller).
+2. Called by `OAuthController`.
+3. Calls `prisma.{user,oauthAccount,oauthPendingIdentity,role,userRole}`,
+   `AuthService.issueSessionForUser`/`recordAuthEvent`,
+   `@saas/auth`'s registry/PKCE/token helpers.
+4. Receives a provider name, the callback's code/state-cookie contents, and
+   (for linking) the calling user's id.
+5. Returns a discriminated `OAuthCallbackResult` (`signed_in` / `linked` /
+   `pending_email` / `error`).
+6. On failure: every branch is enumeration-safe except the one the task
+   itself specifies otherwise (`email_collision`, which deliberately reveals
+   an account exists — see FINDINGS.md for why this is a documented exception,
+   not an oversight).
+7. Secure: a brand-new account is only ever created from a verified email;
+   an unverified/missing email always routes through
+   `OauthPendingIdentity` (its own short-lived, hash-only-storage table — see
+   schema) rather than ever being trusted directly.
+8. **Test-only seam**: `useRegistryForTesting` lets tests inject fake
+   adapters instead of building the real env-driven registry — never called
+   outside `phase9-oauth*.spec.ts`.
+
+### `OAuthController` — start/callback/link/unlink routes, in-app-browser detection (`apps/api/src/auth/oauth/oauth.controller.ts`) — Implemented
+
+1. `GET /auth/oauth/:provider/start` detects an in-app browser (checklist
+   4.1) and shows a plain "open in your browser" page instead of ever
+   redirecting to the provider; otherwise sets the state cookie (SameSite
+   None+Secure for Apple's cross-site POST callback, Lax for every GET-
+   callback provider) and does a full-page redirect (never a popup).
+   `GET`/`POST :provider/callback` validate state (missing/mismatched),
+   cancellation (`access_denied`), and missing code BEFORE ever calling
+   `OAuthService` — the state cookie is consumed (read-and-cleared) in one
+   step, so a replayed callback URL always finds no cookie the second time.
+2. Called by the browser (via a full-page navigation from the frontend's
+   `OAuthButtons`) and by the OAuth provider itself (the callback).
+3. Calls `OAuthService`, `AuthService.verifyAccessToken` (for the `mode=link`
+   session check).
+4. Receives query params (`start`) or query/body params (`callback`,
+   GET/POST respectively), plus the state cookie.
+5. Returns an HTML page (in-app-browser warning) or an HTTP redirect in every
+   other case — never a JSON body for these two routes, since both are
+   browser navigations, not API calls.
+6. On failure: every distinct failure reason maps to its own `?code=` on the
+   `/oauth/error` redirect, so the frontend can show a specific, non-generic
+   message.
+7. Secure: the `mode=link` session check uses full signature verification
+   (`AuthService.verifyAccessToken`), not a bare decode — see the "caught-
+   before-shipping" note on the adapter registry entry above, and BUG-014 in
+   FINDINGS.md.
+8. No inconsistent-state risk — the state cookie's single-use consumption is
+   the only piece of request-scoped state, and it's always cleared
+   unconditionally at the top of the callback handler.
+
+### Reset/Connected-accounts/OAuth frontend pages (`apps/web/src/{components/oauth-buttons,app/oauth/*,app/dashboard/connected-accounts/*}.tsx`) — Implemented
+
+1. `OAuthButtons` lists only whichever providers `GET /auth/oauth/providers`
+   reports as actually configured, each a full-page-navigation button (never
+   `window.open`, so there is no popup-blocked/closed state — checklist item
+   12 is N/A by construction, see TRACEABILITY.md). `/oauth/error` renders a
+   specific message per failure code with a "Back to login" retry.
+   `/oauth/verify-email` is the Facebook/Microsoft collect-and-verify-email
+   sub-flow (two steps: submit email, confirm code — same shape as the
+   Phase 6 OTP UI). `/dashboard/connected-accounts` lists linked providers
+   with per-row unlink buttons and `OAuthButtons mode="link"` for linking a
+   new one.
+2. Rendered by `apps/web/src/app/{(auth)/login,(auth)/signup,oauth/error,oauth/verify-email,dashboard/connected-accounts}/page.tsx`.
+3. Calls `GET /auth/oauth/providers`, `POST /auth/oauth/pending/{submit-email,verify}`,
+   `GET /auth/oauth/accounts`, `DELETE /auth/oauth/accounts/:provider`.
+4. Receives the `code`/`token` query params the API's redirects attach.
+5. Returns rendered UI; a full-page `window.location.href` navigation starts
+   every OAuth flow.
+6. On failure: distinct per-reason messages on `/oauth/error`; inline form
+   errors elsewhere.
+7. Secure: `/oauth/verify-email` sets no special metadata beyond the
+   standard page shell (it carries a lookup token, not a reusable secret —
+   the token is single-use server-side regardless of URL exposure).
+8. No inconsistent-state risk — purely client-side rendering logic.
+
+### Provider session behavior (documented, not implemented) — checklist task 8
+
+This app's own session is always ended by the existing `POST /auth/logout`
+(Phase 5) — true for a session created via password, OTP, magic link, OR any
+OAuth provider, since a `Session` row doesn't record how it was created.
+**None of the five providers' own SSO/IdP session is ever touched** by this
+logout — a user who signs out of this app is NOT automatically signed out of
+google.com, their Microsoft 365 tenant, GitHub.com, Facebook, or their Apple
+ID session. Concretely: visiting `/auth/oauth/google/start` again right after
+local logout, with an active Google browser session, will silently re-
+authenticate via Google's own SSO without prompting for a password — this is
+expected OAuth/SSO behavior, not a bug, but worth a user-facing note if this
+ever becomes confusing in practice (e.g. "signed out of \[app\], but still
+signed in to Google" on a shared computer). No per-provider "federated
+logout" (e.g. Google's own end-session endpoint) is implemented this phase —
+flagged as a potential future enhancement, not a current requirement.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

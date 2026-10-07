@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-07
+
+### Added
+
+- OAuth/social login for Google, Microsoft, GitHub, Facebook, and Apple,
+  plus a generic OIDC-discovery-driven adapter for "any other provider," all
+  behind one shared `OAuthProviderAdapter` interface
+  (`packages/auth/src/oauth/*.ts`).
+- Authorization code flow with PKCE (S256) on every provider; full OIDC ID
+  token validation (signature via JWKS, issuer, audience, expiry, nonce) for
+  Google/Microsoft/Apple/generic; a userinfo API call plus a provider-
+  specific email-trust rule for GitHub (primary+verified only) and Facebook
+  (collect-and-verify when missing).
+- Microsoft: multi-tenant issuer validated against the token's own tenant
+  claim; identified by tenant+object id, never email.
+- Apple: ES256 client-secret JWT signing, `response_mode=form_post` handling,
+  one-time name-field capture, private-relay email support.
+- Account-linking rules in `OAuthService`: identity matched on
+  provider+providerAccountId, never email alone; an email collision with an
+  existing account never auto-links; unverified provider emails never link;
+  a provider identity already linked elsewhere shows a clear error; never
+  unlink the last sign-in method.
+- A collect-and-verify-an-email sub-flow (new `OauthPendingIdentity` table)
+  for Facebook's possibly-missing email and Microsoft's untrusted email
+  claim.
+- New frontend: "Continue with X" buttons on login/signup (full-page
+  redirects only, never a popup), `/oauth/error` (per-reason retry page),
+  `/oauth/verify-email` (the pending-email sub-flow), and
+  `/dashboard/connected-accounts` (link/unlink settings page).
+- 33 new tests across `packages/auth` and `apps/api`, covering PKCE, ID-token
+  validation (including a forged-key rejection test), every provider's
+  email-trust rule, in-app-browser detection, state validation, replayed
+  callbacks, and the full account-linking decision tree.
+
+### Fixed
+
+- **BUG-014 (critical as drafted, never shipped)**: the OAuth link-mode
+  session check initially used an unsigned `jwt.decode()` instead of full
+  signature verification, which would have let a forged cookie link a
+  provider identity to an arbitrary victim account. Caught during this
+  phase's own implementation and fixed before any commit.
+
+### Notes
+
+- Same environment limitation as every prior phase: no live Postgres, so
+  every account-resolution/linking test is written as a real integration
+  test that skips cleanly. No real provider credentials exist for any of the
+  five named providers — Requires configuration for all of them; Apple
+  additionally needs a paid Apple Developer Program enrollment. No browser
+  testing of the full redirect round trip was performed.
+- A successful OAuth email collision deliberately reveals that an account
+  exists for that email — a documented exception to this codebase's usual
+  enumeration-safety discipline, specified by this phase's own task list, not
+  an oversight. See `docs/auth/FINDINGS.md`.
+- Pragmatically resolves D5 (Microsoft/GitHub in scope) the same way Phase 6
+  resolved D4; D2 (managed auth provider) remains genuinely unresolved.
+
 ## [0.9.0] - 2026-10-07
 
 ### Added
@@ -422,7 +479,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and creates a git tag.
 - References to AUTH_RULES.md from CLAUDE.md and AGENTS.md.
 
-[Unreleased]: https://example.com/compare/v0.9.0...HEAD
+[Unreleased]: https://example.com/compare/v0.10.0...HEAD
+[0.10.0]: https://example.com/compare/v0.9.0...v0.10.0
 [0.9.0]: https://example.com/compare/v0.8.0...v0.9.0
 [0.8.0]: https://example.com/compare/v0.7.0...v0.8.0
 [0.7.0]: https://example.com/compare/v0.6.0...v0.7.0

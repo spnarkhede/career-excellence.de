@@ -34,8 +34,17 @@ export const API_ROUTES = {
     resetPassword: "/auth/password-reset/confirm",
     requestOtp: "/auth/otp/request",
     verifyOtp: "/auth/otp/verify",
-    oauthGoogleStart: "/auth/oauth/google/start",
-    oauthGoogleCallback: "/auth/oauth/google/callback",
+    // Phase 9: one provider module per provider behind the same two routes —
+    // `provider` is whatever @saas/auth's OAuthProviderAdapter registry has
+    // registered (google/microsoft/github/facebook/apple, or the configured
+    // "any other provider" generic adapter), never hardcoded per name.
+    oauthProviders: "/auth/oauth/providers",
+    oauthStart: (provider: string) => `/auth/oauth/${provider}/start`,
+    oauthCallback: (provider: string) => `/auth/oauth/${provider}/callback`,
+    oauthAccounts: "/auth/oauth/accounts",
+    oauthUnlinkAccount: (provider: string) => `/auth/oauth/accounts/${provider}`,
+    oauthSubmitPendingEmail: "/auth/oauth/pending/submit-email",
+    oauthVerifyPendingEmail: "/auth/oauth/pending/verify",
     sessions: "/auth/sessions",
     revokeSession: (sessionId: string) => `/auth/sessions/${sessionId}`,
     revokeOtherSessions: "/auth/sessions/revoke-others",

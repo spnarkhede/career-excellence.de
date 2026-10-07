@@ -84,9 +84,12 @@ export interface CookieOptions {
    * navigation (e.g. a refresh token, which is only ever read by same-site
    * fetches); "lax" (the default) for ones that must still work after following a
    * same-site-but-top-level-navigation link from elsewhere (e.g. an email
-   * magic-link landing page's own subsequent fetches).
+   * magic-link landing page's own subsequent fetches); "none" (always paired
+   * with Secure) only for a cookie that must survive a genuine cross-site
+   * request — Apple's Sign in with Apple web callback arrives as a cross-site
+   * POST, which Lax would not carry the cookie on.
    */
-  sameSite?: "strict" | "lax";
+  sameSite?: "strict" | "lax" | "none";
 }
 
 export function sessionCookieOptions({

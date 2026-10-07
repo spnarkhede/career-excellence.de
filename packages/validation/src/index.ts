@@ -88,6 +88,20 @@ export const changePasswordSchema = z.object({
   newPassword: passwordSchema,
 });
 
+// Phase 9 (OAuth): the "collect and verify an email" sub-flow used whenever a
+// provider returns no usable (present + trusted) email — Facebook's missing
+// email, Microsoft's untrusted email claim, or GitHub with no verified
+// primary email.
+export const oauthSubmitPendingEmailSchema = z.object({
+  lookupToken: z.string().min(1),
+  email: emailSchema,
+});
+
+export const oauthVerifyPendingEmailSchema = z.object({
+  lookupToken: z.string().min(1),
+  code: z.string().length(6).regex(/^\d+$/, "Code must be numeric"),
+});
+
 export const updateProfileSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
 });
@@ -109,5 +123,7 @@ export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>;
 export type RequestMagicLinkInput = z.infer<typeof requestMagicLinkSchema>;
 export type VerifyMagicLinkInput = z.infer<typeof verifyMagicLinkSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+export type OAuthSubmitPendingEmailInput = z.infer<typeof oauthSubmitPendingEmailSchema>;
+export type OAuthVerifyPendingEmailInput = z.infer<typeof oauthVerifyPendingEmailSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 export type CookiePreferencesInput = z.infer<typeof cookiePreferencesSchema>;

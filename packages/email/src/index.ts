@@ -32,6 +32,14 @@ export function magicLinkEmailTemplate(signInUrl: string): SendEmailInput["html"
   return `<p>Click the link below to sign in.</p><p><a href="${signInUrl}">Sign in</a></p><p>This link expires soon and can only be used once. If you didn't request this, you can ignore this email.</p>`;
 }
 
+/** Phase 9 (OAuth): sent when a provider either returned no email at all
+ * (Facebook) or one this app isn't willing to trust for linking (Microsoft) —
+ * the user types an email in and must prove they control it before any
+ * account is created from that provider identity. */
+export function oauthPendingIdentityEmailTemplate(code: string): SendEmailInput["html"] {
+  return `<p>Enter this code to finish signing in:</p><p style="font-size:24px;font-weight:bold;">${code}</p><p>This code expires shortly.</p>`;
+}
+
 /** Confirms a password change/reset to the account owner — sent regardless of
  * which flow changed it (token-based reset or the authenticated change-password
  * endpoint), so the owner has a record even if they didn't initiate it. */

@@ -798,3 +798,116 @@ pnpm test && pnpm db:check-consistency` against a real, disposable Postgres data
 - **Regression risk:** N/A — no further fix applied this phase.
 - **How to test:** N/A until a decision is made on whether the residual gap
   warrants a calibrated-delay fix.
+
+### BUG-014: `OAuthController`'s link-mode session check initially used a bare JWT decode with no signature verification
+
+- **Label:** Confirmed bug
+- **Severity:** CRITICAL (as initially written; never shipped/committed) —
+  this is a textbook authentication bypass: anyone could forge a
+  `{sub: "<any user id>"}` JWT payload (no valid signature required, since
+  `jwt.decode()` performs zero verification) and have the OAuth "link a new
+  provider to my account" flow treat it as that user, letting an attacker
+  link an arbitrary OAuth identity to ANY victim's account purely by crafting
+  an unsigned-but-correctly-shaped cookie value.
+- **Status:** Fixed (caught during this phase's own implementation, before
+  any commit)
+- **Component/file:** `apps/api/src/auth/oauth/oauth.controller.ts`, method
+  `start` (the `mode === "link"` branch)
+- **Exact location:** A first-draft private helper that called
+  `jwt.decode(token)` (not `jwt.verify`) and trusted the resulting `sub`
+  claim directly as the user to link the new provider identity to.
+- **Problem:** `jwt.decode()` parses a JWT's payload without checking its
+  signature at all — it will happily "decode" a token with a garbage or
+  missing signature, or one signed by a completely different key, as long as
+  the payload is syntactically a JWT. There is no cryptographic guarantee the
+  token was ever actually issued by this server.
+- **Root cause:** Written as a quick stand-in to avoid a circular import back
+  into `AuthController` for its (also private) `resolveExistingSessionId`
+  helper, and the quick version used the wrong jsonwebtoken function
+  (`decode` instead of `verify`) — an easy mistake because both return the
+  same-shaped payload object on success, so the code "worked" in casual
+  testing with a legitimately-issued cookie.
+- **Trigger:** Any request to `GET /auth/oauth/:provider/start?mode=link`
+  carrying a cookie whose value is a JWT-shaped (three dot-separated base64url
+  segments) string with an arbitrary `sub` claim — no valid signature needed.
+- **Impact:** Complete authentication bypass of the "linking requires an
+  already-authenticated caller" guarantee, had this shipped — an attacker
+  could link a provider identity THEY control to a VICTIM's account, which
+  (depending on how account recovery/password-reset interacts with linked
+  providers in a later phase) could be a path to full account takeover.
+- **Reproduction steps (of the vulnerable draft, not the shipped code):**
+  1. Construct `header.payload.` with `payload` decoding to `{"sub": "<victim-user-id>"}` and any garbage/empty signature segment. 2) Set it as the session
+     cookie. 3) Call `/auth/oauth/google/start?mode=link`. 4) The draft code would
+     have accepted `<victim-user-id>` as the authenticated caller with no
+     signature check at all.
+- **Expected behavior:** Only a cookie containing a genuinely
+  signed-by-this-server, unexpired, non-revoked access token should ever
+  resolve to a user id for linking.
+- **Actual behavior:** N/A — never shipped; caught in review before being
+  committed (same category as the Phase 7 dashboard-error `redirect()`
+  control-flow note: "a bug worth documenting even though it was caught
+  before being committed").
+- **Why it happens:** See root cause.
+- **Related components:** `AuthService.verifyAccessToken` (Phase 7) already
+  existed and does full RS256 signature + issuer/audience/expiry/nonce
+  validation — the fix was simply to call that instead of hand-rolling a
+  second, weaker check.
+- **Recommended fix (applied):** Replaced the bare `jwt.decode()` call with
+  `this.authService.verifyAccessToken(token).userId`, injecting `AuthService`
+  into `OAuthController`'s constructor. Removed the now-dead helper method and
+  its `require("jsonwebtoken")`/`eslint-disable` workaround entirely.
+- **Regression risk:** None — this was never in a committed state; the fix
+  simply uses the same verification every other `SessionGuard`-protected
+  route already relies on.
+- **How to test the fix:** No dedicated automated test specifically targets
+  "a forged/unsigned cookie is rejected for linking" (would duplicate
+  `AuthService.verifyAccessToken`'s own test coverage from Phase 7's
+  `phase7-tokens.spec.ts`, which already covers forged/malformed/wrong-key
+  tokens exhaustively) — Requires manual verification via a running server:
+  send `mode=link` with a cookie containing an unsigned JWT-shaped value,
+  confirm a redirect to `link_session_missing`, never a successful link.
+
+### Potential risk: a successful OAuth email collision deliberately reveals that an account exists
+
+- **Label:** Potential risk (a documented, task-mandated exception — not a
+  bug)
+- **Severity:** LOW — the behavior is explicitly specified by this phase's
+  own task list, not an accidental enumeration leak; flagging it only because
+  every OTHER flow in this codebase (password reset, signup, OTP) goes out of
+  its way to be enumeration-safe, and a future reviewer might otherwise
+  assume this is inconsistent by mistake rather than by design.
+- **Status:** Requires manual verification (confirmed intentional per spec,
+  not something to "fix")
+- **Component/file:** `apps/api/src/auth/oauth/oauth.service.ts`,
+  `resolveIdentity` (the `existingUser` branch), and
+  `apps/web/src/app/oauth/error/error-client.tsx` (the `email_collision`
+  message)
+- **Problem:** When an OAuth identity's verified email matches an EXISTING
+  account, the response (`{ kind: "error", code: "email_collision" }`, and
+  the frontend copy "An account already exists with this email...") directly
+  confirms an account exists for that email — something every other flow in
+  this codebase (password reset, signup, change-password) is carefully
+  designed never to reveal.
+- **Root cause / why it happens:** Task 5 explicitly specifies this exact UX:
+  "An email collision with an existing account never auto links. The user
+  signs in to the existing account, then links from settings." Telling the
+  user to "sign in to the existing account" necessarily implies one exists —
+  there's no way to give that instruction without revealing the fact it's
+  based on.
+- **Impact:** An attacker could probe arbitrary emails via any configured
+  OAuth provider's consent screen to learn which ones have existing accounts
+  on this app — a slower, more visible enumeration vector than a timing
+  attack (it requires completing an OAuth consent flow per guess, which rate
+  limiting and the OAuth provider's own abuse detection both make
+  impractical at scale, but it is still a confirmed information disclosure
+  by design).
+- **Recommended fix:** None recommended — this is working as specified.
+  If a stricter enumeration-safety posture is wanted for this flow
+  specifically, the task's own UX requirement would need to change first
+  (e.g. to a generic "couldn't sign you in with that provider — try signing
+  in with your password instead" message that never distinguishes collision
+  from any other failure).
+- **How to test:** `apps/api/test/phase9-oauth.integration.spec.ts`'s "never
+  auto-links on an email collision with an existing account" test confirms
+  the CODE path; the frontend message is unverified in an actual browser
+  this session.

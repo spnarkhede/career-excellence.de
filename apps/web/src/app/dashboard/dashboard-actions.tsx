@@ -40,6 +40,9 @@ export function DashboardActions() {
       <Button variant="outline" onClick={() => router.push("/dashboard/sessions")}>
         Manage sessions
       </Button>
+      <Button variant="outline" onClick={() => router.push("/dashboard/connected-accounts")}>
+        Connected accounts
+      </Button>
       <Button variant="ghost" onClick={() => void handleLogout()} disabled={loggingOut}>
         {loggingOut ? "Logging out…" : "Log out"}
       </Button>

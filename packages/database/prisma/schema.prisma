@@ -108,8 +108,8 @@ model Profile {
 // table is OAuth-only, per the Phase 3 schema spec.
 model OauthAccount {
   id                      String   @id @default(uuid())
-  provider                String // "google" | "microsoft" | "github"
-  providerAccountId       String // the external provider's stable subject id
+  provider                String // "google" | "microsoft" | "github" | "facebook" | "apple" | ... (any provider name, see @saas/auth's OAuthProviderAdapter registry)
+  providerAccountId       String // the external provider's stable subject id (Google/GitHub/Facebook: sub/id; Microsoft: tid+oid, concatenated; Apple: sub)
   userId                  String
   user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   emailAtLinkTime         String
@@ -119,6 +119,35 @@ model OauthAccount {
   @@unique([provider, providerAccountId])
   @@index([userId])
   @@map("oauth_accounts")
+}
+
+// Phase 9 (OAuth): a provider identity callback that resolved to a REAL
+// identity but had no usable email (Facebook can omit email entirely) ends up
+// here instead of creating/linking a User — the task requires asking the user
+// for an email and verifying it before any account is created. A tiny,
+// dedicated table rather than reusing OneTimeToken, since there is no userId
+// yet at this point (that's exactly the problem being solved) and
+// OneTimeToken.userId is non-nullable by design for every other purpose.
+model OauthPendingIdentity {
+  id                 String   @id @default(uuid())
+  provider           String
+  providerAccountId  String
+  displayName        String?
+  // The user-submitted email, pending its own verification code — set once the
+  // "enter your email" step is submitted, before the code is confirmed.
+  pendingEmail       String?
+  // Hash of the pending-identity lookup token (carried in the "enter your
+  // email" page's URL) — same hash-only-storage rule as every other token.
+  lookupTokenHash    String   @unique
+  // Hash of the numeric code emailed to pendingEmail, once set.
+  verifyCodeHash     String?
+  verifyAttempts     Int      @default(0)
+  expiresAt          DateTime
+  usedAt             DateTime?
+  createdAt          DateTime @default(now())
+
+  @@index([provider, providerAccountId])
+  @@map("oauth_pending_identities")
 }
 
 // --- Sessions ----------------------------------------------------------------

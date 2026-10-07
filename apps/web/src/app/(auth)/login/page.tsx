@@ -10,6 +10,7 @@ import { loginSchema, type LoginInput } from "@saas/validation";
 import { ApiClientError, ApiClientOfflineError, ApiClientTimeoutError } from "@saas/api-client";
 import type { AuthenticatedPrincipal } from "@saas/types";
 import { apiClient } from "../../../lib/api-client";
+import { OAuthButtons } from "../../../components/oauth-buttons";
 
 const DEFAULT_REDIRECT = "/dashboard";
 
@@ -113,6 +114,8 @@ function LoginForm() {
       <Button type="submit" disabled={isSubmitting}>
         {isSubmitting ? "Logging in…" : "Log in"}
       </Button>
+
+      <OAuthButtons mode="login" />
     </form>
   );
 }
