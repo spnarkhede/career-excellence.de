@@ -77,7 +77,7 @@ describe("Error catalog entries, triggered for real against a live database", ()
   }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}bad-password@example.test`;
-    await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
     await prisma.user.update({ where: { email }, data: { status: "active" } });
 
     const err: unknown = await authService

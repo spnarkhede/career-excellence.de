@@ -133,6 +133,13 @@ export const AUTH_ERROR_CATALOG: Record<string, ErrorCatalogEntry> = {
     message: "The service is temporarily unavailable. Please try again.",
     recovery: "retry",
   },
+  // --- Spam protection (Phase 14) ---
+  SPAM_REJECTED: {
+    status: 400,
+    message: "We couldn't submit your message right now. Please try again.",
+    recovery: "retry",
+  },
+
   INTERNAL_ERROR: {
     status: 500,
     message:

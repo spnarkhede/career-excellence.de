@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 import "../lib/env";
 import { CookieConsentBanner } from "../components/cookie-consent-banner";
+import { AnalyticsBootstrap } from "../components/analytics-bootstrap";
 import { AuthProvider } from "../components/auth-provider";
+import { Footer } from "../components/footer";
 import { getServerSession } from "../lib/session";
 
 export const metadata: Metadata = {
@@ -18,10 +20,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const initialPrincipal = await getServerSession();
   return (
     <html lang="en">
-      <body>
+      <body className="flex min-h-screen flex-col">
         <AuthProvider initialPrincipal={initialPrincipal}>
-          {children}
+          <div className="flex-1">{children}</div>
+          <Footer />
           <CookieConsentBanner />
+          <AnalyticsBootstrap />
         </AuthProvider>
       </body>
     </html>

@@ -14,7 +14,7 @@ const TEST_PASSWORD = "a-strong-password-123"; // secret-scan-ignore-line: fake 
 async function createActiveUser(emailSuffix: string): Promise<string> {
   const authService = new AuthService();
   const email = `${EMAIL_PREFIX}${emailSuffix}@example.test`;
-  await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+  await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
   await prisma.user.update({ where: { email }, data: { status: "active" } });
   return email;
 }
@@ -76,7 +76,7 @@ describe("Phase 5: login process (real database)", () => {
   }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}unverified@example.test`;
-    await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
     await expect(authService.login({ email, password: TEST_PASSWORD }, ctx)).rejects.toThrow(
       /verify your email/i,
     );
@@ -267,7 +267,7 @@ describe("Phase 5: login input validation (real database)", () => {
     if (!dbReachable || !app) skip();
     const authService = new AuthService();
     const email = `${EMAIL_PREFIX}normalize@example.test`;
-    await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
     await prisma.user.update({ where: { email }, data: { status: "active" } });
 
     const res = await request(app!.getHttpServer())

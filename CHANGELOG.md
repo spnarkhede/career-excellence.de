@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-08
+
+### Added
+
+- Privacy policy and Terms & conditions pages
+  (`apps/web/src/app/{privacy,terms}/page.tsx`), both marked "Draft —
+  requires legal review" with placeholder controller/processor/retention
+  text; no Impressum page created (operator's jurisdiction not
+  established — documented decision, see `docs/auth/FINDINGS.md`).
+- Signup now records terms acceptance and a timestamp
+  (`signUpSchema`'s required `termsAccepted` field, a `Consent` row
+  written in the same transaction as account creation).
+- Rewritten cookie consent banner (`CookieConsentBanner`) with
+  per-category choices, a `Footer` "Cookie settings" reopen link, and a
+  Reject/Accept button pair of identical variant and size.
+- First-party, cookieless analytics (`HttpAnalyticsProvider`,
+  `apps/api/src/analytics/*`): a closed server-side event-name allowlist
+  plus value-shape stripping of email/JWT/UUID-looking properties;
+  tracks `signup_started`, `signup_completed`, `login`,
+  `verification_completed`.
+- Contact form (`apps/web/src/app/contact/*`, `apps/api/src/contact/*`)
+  with a shared, server-authoritative Zod schema and 3-layer spam
+  protection: a honeypot field, a minimum-fill-time check, and
+  server-verified Cloudflare Turnstile (skips with a logged warning —
+  "Requires configuration" — when no secret key is set), all failures
+  returning the same `SPAM_REJECTED` response.
+- Enhanced custom 404 page (home/navigation links) and 500 page
+  (`global-error.tsx`, a "Go home" link alongside the existing retry
+  button).
+
+### Fixed
+
+- **BUG-026**: a granted analytics consent never resulted in an actual
+  tracked event on a fresh page load — `CookieConsentBanner` and
+  `AnalyticsBootstrap`, both mounted as root-layout siblings, each only
+  re-established required state inside their own mount effect, which
+  could run after a page's own mount-time `track()` call. Fixed by
+  initializing both at module-evaluation time instead.
+
+### Notes
+
+- Reviewed the existing landing/auth page CTA structure against this
+  phase's "single clear CTA" checklist item and found it already
+  compliant — no code change required.
+- Every DONE WHEN test (`consent-gated analytics`, `404 status`,
+  `server-side validation with client bypassed`, `honeypot/timing/
+missing-challenge rejection`) actually passes; the legal-TEXT half of
+  the condition is honestly left `Requires manual verification` — the
+  pages are wired and tested, but their content needs a real legal
+  review, which this phase does not claim to substitute for.
+
 ## [0.14.0] - 2026-10-07
 
 ### Added

@@ -8,6 +8,7 @@ import { Button, ErrorSummary, FormError, Label, PasswordInput, Input } from "@s
 import { resolveAuthRedirect } from "@saas/security";
 import { loginSchema, type LoginInput } from "@saas/validation";
 import { ApiClientError, ApiClientOfflineError, ApiClientTimeoutError } from "@saas/api-client";
+import { track } from "@saas/analytics";
 import { apiClient } from "../../../lib/api-client";
 import { OAuthButtons } from "../../../components/oauth-buttons";
 import { useAuth } from "../../../components/auth-provider";
@@ -81,6 +82,7 @@ function LoginForm() {
       // re-resolves the session from the server and broadcasts to other
       // tabs before this page navigates on.
       await auth.notifyLoggedIn();
+      track("login");
       router.push(resolveRedirectTarget(searchParams));
     } catch (err) {
       if (err instanceof ApiClientTimeoutError) {

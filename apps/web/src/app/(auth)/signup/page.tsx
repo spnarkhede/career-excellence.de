@@ -12,6 +12,7 @@ import {
   type SignUpInput,
 } from "@saas/validation";
 import { ApiClientError } from "@saas/api-client";
+import { track } from "@saas/analytics";
 import { apiClient } from "../../../lib/api-client";
 import { OAuthButtons } from "../../../components/oauth-buttons";
 
@@ -44,12 +45,19 @@ export default function SignUpPage() {
     ...(formError ? [{ id: "signup-form-error", message: formError }] : []),
     ...(errors.email ? [{ id: "email", message: errors.email.message! }] : []),
     ...(errors.password ? [{ id: "password", message: errors.password.message! }] : []),
+    ...(errors.termsAccepted
+      ? [{ id: "termsAccepted", message: errors.termsAccepted.message! }]
+      : []),
   ];
 
   useEffect(() => {
     if (summaryItems.length > 0) errorSummaryRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formError, errors.email, errors.password]);
+
+  // Checklist task 5: "track signup started" — fires once per form view,
+  // never containing the email/password the user is about to type.
+  useEffect(() => track("signup_started"), []);
 
   const onSubmit = async (values: SignUpInput) => {
     if (submitLock.current) return;
@@ -61,6 +69,7 @@ export default function SignUpPage() {
       // only after success, never wiping input on error") — switching to
       // the "check your email" view makes the form unreachable anyway, but
       // never clears field values on a failed submit above.
+      track("signup_completed");
       setSubmitted(true);
     } catch (err) {
       setFormError(err instanceof ApiClientError ? err.body.message : "Something went wrong.");
@@ -119,6 +128,22 @@ export default function SignUpPage() {
         )}
         <FormError message={errors.password?.message} />
       </div>
+
+      <div className="flex items-start gap-2">
+        <input id="termsAccepted" type="checkbox" className="mt-1" {...register("termsAccepted")} />
+        <Label htmlFor="termsAccepted" className="text-sm font-normal">
+          I agree to the{" "}
+          <a href="/terms" target="_blank" rel="noreferrer" className="underline">
+            Terms &amp; Conditions
+          </a>{" "}
+          and{" "}
+          <a href="/privacy" target="_blank" rel="noreferrer" className="underline">
+            Privacy Policy
+          </a>
+          .
+        </Label>
+      </div>
+      <FormError message={errors.termsAccepted?.message} />
 
       <Button type="submit" disabled={isSubmitting}>
         {isSubmitting ? "Creating account…" : "Sign up"}

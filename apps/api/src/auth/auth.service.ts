@@ -31,6 +31,7 @@ import {
   verifyPassword,
 } from "@saas/security/server";
 import { generateSecureToken, isExpired } from "@saas/utils";
+import { CURRENT_TERMS_VERSION } from "@saas/validation";
 import type {
   ChangePasswordInput,
   LoginInput,
@@ -303,6 +304,14 @@ export class AuthService {
       await tx.userRole.createMany({
         data: [{ userId: created.id, roleId: userRole.id }],
         skipDuplicates: true,
+      });
+      // Phase 14 task 3: "signup records acceptance of the current terms
+      // version and timestamp" — in the SAME transaction as account
+      // creation, so a crash between the two never leaves an account with
+      // no recorded acceptance (the same "no partial account" invariant
+      // the role assignment above already relies on).
+      await tx.consent.create({
+        data: { userId: created.id, type: "terms", version: CURRENT_TERMS_VERSION },
       });
       return created;
     });

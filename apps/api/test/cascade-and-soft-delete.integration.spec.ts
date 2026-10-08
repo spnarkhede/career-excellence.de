@@ -25,7 +25,7 @@ describe("cascade delete and soft delete (real database)", () => {
   }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}hard-delete@example.test`;
-    await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
     const { id: userId } = await prisma.user.findUniqueOrThrow({ where: { email } });
     // Activate directly — this test exercises cascade delete, not the verification flow.
     await prisma.user.update({ where: { id: userId }, data: { status: "active" } });
@@ -49,7 +49,7 @@ describe("cascade delete and soft delete (real database)", () => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}soft-delete@example.test`;
     const password = TEST_PASSWORD;
-    await authService.signUp({ email, password }, ctx);
+    await authService.signUp({ email, password, termsAccepted: true }, ctx);
     const { id: userId } = await prisma.user.findUniqueOrThrow({ where: { email } });
     // Activate directly — this test exercises soft delete, not the verification flow.
     await prisma.user.update({ where: { id: userId }, data: { status: "active" } });

@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Button, FormError, Input, Label } from "@saas/ui";
 import { isAllowedRedirect } from "@saas/security";
+import { track } from "@saas/analytics";
 import { apiClient } from "../../../lib/api-client";
 
 type VerifyReason = "valid" | "expired" | "already_used" | "invalid" | "already_verified";
@@ -55,6 +56,9 @@ function VerifyEmailContent() {
     setPhase("verifying");
     try {
       const res = await apiClient.post<{ reason: VerifyReason }>("/auth/verify-email", { token });
+      // Checklist task 5: "track... verification completed" — only for the
+      // genuine "valid" outcome, never for expired/invalid/already-used.
+      if (res.reason === "valid") track("verification_completed");
       setReason(res.reason);
       setPhase("done");
     } catch {

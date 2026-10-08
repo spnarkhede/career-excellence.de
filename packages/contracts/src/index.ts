@@ -56,4 +56,10 @@ export const API_ROUTES = {
     liveness: "/health/live",
     readiness: "/health/ready",
   },
+  contact: {
+    submit: "/contact",
+  },
+  analytics: {
+    events: "/analytics/events",
+  },
 } as const;

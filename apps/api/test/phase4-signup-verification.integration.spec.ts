@@ -1,6 +1,8 @@
 import { prisma } from "@saas/database";
 import { logger } from "@saas/observability";
+import { PASSWORD_MIN_LENGTH } from "@saas/validation";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import * as emailQueueModule from "../src/common/email-queue.js";
 import { AuthService } from "../src/auth/auth.service.js";
 import { cleanupTestUsers, isDatabaseReachable } from "./db-test-helpers.js";
 
@@ -33,7 +35,10 @@ describe("Phase 4: signup, password creation, email verification (real database)
   }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}signup@example.test`;
-    const result = await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    const result = await authService.signUp(
+      { email, password: TEST_PASSWORD, termsAccepted: true },
+      ctx,
+    );
     expect(result).toEqual({ email, status: "pending_verification" });
 
     const user = await prisma.user.findUniqueOrThrow({ where: { email } });
@@ -48,11 +53,14 @@ describe("Phase 4: signup, password creation, email verification (real database)
   }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}duplicate@example.test`;
-    const first = await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    const first = await authService.signUp(
+      { email, password: TEST_PASSWORD, termsAccepted: true },
+      ctx,
+    );
     const usersAfterFirst = await prisma.user.count({ where: { email } });
 
     const second = await authService.signUp(
-      { email, password: "a-completely-different-password-456" }, // secret-scan-ignore-line
+      { email, password: "a-completely-different-password-456", termsAccepted: true }, // secret-scan-ignore-line
       ctx,
     );
     const usersAfterSecond = await prisma.user.count({ where: { email } });
@@ -66,7 +74,7 @@ describe("Phase 4: signup, password creation, email verification (real database)
   it("verifies with a valid, unused, unexpired token", async ({ skip }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}verify-valid@example.test`;
-    await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
     const user = await prisma.user.findUniqueOrThrow({ where: { email } });
     const tokenRecord = await getLatestVerifyToken(user.id);
     expect(tokenRecord).not.toBeNull();
@@ -90,7 +98,7 @@ describe("Phase 4: signup, password creation, email verification (real database)
   it("reports 'expired' for a token past its expiry, without verifying", async ({ skip }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}verify-expired@example.test`;
-    await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
     const user = await prisma.user.findUniqueOrThrow({ where: { email } });
     const tokenRecord = await getLatestVerifyToken(user.id);
     if (!tokenRecord) throw new Error("expected a verify_email token to exist");
@@ -121,7 +129,7 @@ describe("Phase 4: signup, password creation, email verification (real database)
   it("resend invalidates the older token and issues a new one that works", async ({ skip }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}resend@example.test`;
-    await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
     const user = await prisma.user.findUniqueOrThrow({ where: { email } });
     const firstToken = await getLatestVerifyToken(user.id);
     if (!firstToken) throw new Error("expected a verify_email token after signup");
@@ -147,7 +155,7 @@ describe("Phase 4: signup, password creation, email verification (real database)
   it("resend gives the same response for a known and an unknown email", async ({ skip }) => {
     if (!dbReachable) skip();
     const known = `${EMAIL_PREFIX}resend-known@example.test`;
-    await authService.signUp({ email: known, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email: known, password: TEST_PASSWORD, termsAccepted: true }, ctx);
 
     // Both calls return void and never throw, regardless of whether the account
     // exists — "same response for known and unknown emails".
@@ -163,7 +171,7 @@ describe("Phase 4: signup, password creation, email verification (real database)
   }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}unverified-login@example.test`;
-    await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
 
     await expect(authService.login({ email, password: TEST_PASSWORD }, ctx)).rejects.toThrow(
       /verify your email/i,
@@ -178,15 +186,15 @@ describe("Phase 4: signup, password creation, email verification (real database)
 
   // Checklist 7: Password creation. (Server-side policy is exercised directly in
   // packages/validation/src/index.spec.ts; this confirms the real signup path accepts
-  // an 8-character NIST-minimum, no-composition password end to end.)
-  it("accepts an 8-character, single-case, all-lowercase password (no composition rules)", async ({
+  // a NIST-minimum-length, no-composition password end to end.)
+  it("accepts a minimum-length, single-case, all-lowercase password (no composition rules)", async ({
     skip,
   }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}min-password@example.test`;
-    const MIN_LENGTH_PASSWORD = "allsmall"; // secret-scan-ignore-line: fake fixture
+    const MIN_LENGTH_PASSWORD = "a".repeat(PASSWORD_MIN_LENGTH); // secret-scan-ignore-line: fake fixture
     await expect(
-      authService.signUp({ email, password: MIN_LENGTH_PASSWORD }, ctx),
+      authService.signUp({ email, password: MIN_LENGTH_PASSWORD, termsAccepted: true }, ctx),
     ).resolves.toEqual({
       email,
       status: "pending_verification",
@@ -227,14 +235,18 @@ describe("Phase 4: signup, password creation, email verification (real database)
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}email-fails@example.test`;
     const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
-    const emailModule = await import("@saas/email");
-    const sendSpy = vi
-      .spyOn(emailModule.StubEmailProvider.prototype, "send")
-      .mockRejectedValueOnce(new Error("simulated provider outage"));
+    // Verification emails are queued (BUG-fixed in Stage 4 #66) — simulate a
+    // delivery failure at the queue producer, the same seam phase8's reset-email
+    // tests use, rather than the (no longer reached in-request) provider.send.
+    const enqueueSpy = vi
+      .spyOn(emailQueueModule, "enqueueEmail")
+      .mockRejectedValueOnce(new Error("simulated queue outage"));
 
     // Signup must succeed (the user is created) even though sending the verification
     // email fails — the user can recover via the resend endpoint.
-    await expect(authService.signUp({ email, password: TEST_PASSWORD }, ctx)).resolves.toEqual({
+    await expect(
+      authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx),
+    ).resolves.toEqual({
       email,
       status: "pending_verification",
     });
@@ -252,7 +264,7 @@ describe("Phase 4: signup, password creation, email verification (real database)
     });
     expect(failureEvent).not.toBeNull();
 
-    sendSpy.mockRestore();
+    enqueueSpy.mockRestore();
     errorSpy.mockRestore();
   });
 
@@ -262,7 +274,7 @@ describe("Phase 4: signup, password creation, email verification (real database)
   }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}already-verified@example.test`;
-    await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
     const user = await prisma.user.findUniqueOrThrow({ where: { email } });
 
     const rawToken = await captureNextIssuedToken(() => authService.resendVerification(email, ctx));
@@ -287,7 +299,7 @@ describe("Phase 4: signup, password creation, email verification (real database)
   it("never persists the raw verification token — only its hash", async ({ skip }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}no-raw-token@example.test`;
-    await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
     const user = await prisma.user.findUniqueOrThrow({ where: { email } });
     const rawToken = await captureNextIssuedToken(() => authService.resendVerification(email, ctx));
 
@@ -308,20 +320,19 @@ describe("Phase 4: signup, password creation, email verification (real database)
  * persisted as a hash, emailed) — AuthService has no method that returns it, by
  * design (see the "no raw token in logs/DB" test). To exercise verifyEmail with a
  * real, valid token in these tests, intercept it at the one seam where it's
- * observable outside the DB: the email provider's `send` call, whose template embeds
- * the token in a URL. This mirrors what a real test would scrape from a local mail
- * catcher's captured message, without needing one running in this environment.
+ * observable outside the DB: the queue producer's `enqueueEmail` call, whose
+ * template embeds the token in a URL (same pattern as phase8's
+ * captureNextResetToken — verification emails are queued, not sent in-request).
  */
 async function captureNextIssuedToken(trigger: () => Promise<void>): Promise<string> {
-  const emailModule = await import("@saas/email");
-  const sendSpy = vi.spyOn(emailModule.StubEmailProvider.prototype, "send");
+  const enqueueSpy = vi.spyOn(emailQueueModule, "enqueueEmail").mockResolvedValue(undefined);
   await trigger();
-  const call = sendSpy.mock.calls.at(-1)?.[0] as { html: string } | undefined;
-  sendSpy.mockRestore();
-  if (!call) throw new Error("expected an email to have been sent");
+  const call = enqueueSpy.mock.calls.at(-1)?.[0] as { html: string } | undefined;
+  enqueueSpy.mockRestore();
+  if (!call) throw new Error("expected an email to have been queued");
   const match = /token=([^"&]+)/.exec(call.html);
   const captured = match?.[1];
-  if (!captured) throw new Error("expected a verification URL with a token in the sent email");
+  if (!captured) throw new Error("expected a verification URL with a token in the queued email");
   return decodeURIComponent(captured);
 }
 

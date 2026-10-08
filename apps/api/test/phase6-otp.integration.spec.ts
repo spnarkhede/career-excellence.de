@@ -10,7 +10,7 @@ const TEST_PASSWORD = "a-strong-password-123"; // secret-scan-ignore-line: fake 
 async function createActiveUser(suffix: string): Promise<string> {
   const authService = new AuthService();
   const email = `${EMAIL_PREFIX}${suffix}@example.test`;
-  await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+  await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
   await prisma.user.update({ where: { email }, data: { status: "active" } });
   return email;
 }

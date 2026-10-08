@@ -2,7 +2,9 @@ import { Module } from "@nestjs/common";
 import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
 import { APP_GUARD } from "@nestjs/core";
 import type Redis from "ioredis";
+import { AnalyticsModule } from "./analytics/analytics.module.js";
 import { AuthModule } from "./auth/auth.module.js";
+import { ContactModule } from "./contact/contact.module.js";
 import { HealthModule } from "./health/health.module.js";
 import { ProfileModule } from "./profile/profile.module.js";
 import { REDIS_CLIENT, RedisModule } from "./common/redis.module.js";
@@ -25,6 +27,8 @@ import { RedisThrottlerStorage } from "./common/redis-throttler-storage.js";
     HealthModule,
     AuthModule,
     ProfileModule,
+    ContactModule,
+    AnalyticsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

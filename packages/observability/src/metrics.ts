@@ -22,7 +22,8 @@ export type AuthMetricName =
   | "rate_limited"
   | "refresh_reuse_detected"
   | "auth_5xx"
-  | "email_send_failed";
+  | "email_send_failed"
+  | "spam_rejected";
 
 export function recordAuthMetric(
   metric: AuthMetricName,

@@ -1477,6 +1477,163 @@ message}` result; the page renders a retry UI on `"error"` rather than
    working**, not "Requires manual verification," for everything it
    covers).
 
+### `CookieConsentBanner` v2 / `Footer` (`apps/web/src/components/{cookie-consent-banner,footer}.tsx`) — Implemented (Phase 14)
+
+1. Lets a visitor grant or reject analytics/marketing cookies per category
+   (strictly-necessary cookies always on, never offered as a choice); the
+   `Footer`'s "Cookie settings" link reopens the banner after a choice was
+   already made, via a shared `window` `CustomEvent`
+   (`REOPEN_COOKIE_SETTINGS_EVENT`).
+2. Mounted once, globally, as siblings in `apps/web/src/app/layout.tsx`.
+3. Reads/writes `localStorage["cookie-consent"]` (key/version re-exported
+   from `@saas/analytics` so the two modules can never silently drift);
+   calls `consentUpdated()` on every choice.
+4. Receives no props; takes its only input from a click and the stored
+   consent value.
+5. Returns nothing — side effect only (updates `localStorage` + in-memory
+   consent state the analytics module reads).
+6. On failure (e.g. `localStorage` unavailable): `readStoredConsent`/
+   `readStoredConsentGranted` both fail closed (treat as "no consent"), never
+   open.
+7. Secure: never sets or reads a cookie of its own; the only cookies the app
+   sets are the pre-existing, strictly-necessary session cookies, unaffected
+   by this choice.
+8. Fixed in this phase (**BUG-026**, see FINDINGS.md): the banner's consent
+   re-grant previously only happened inside its own mount effect, which could
+   run after a freshly-navigated page's own mount-time `track()` call,
+   silently dropping the event. **Confirmed working** via
+   `tests/e2e/phase14-legal-consent.spec.ts` (6/6 chromium+mobile).
+
+### `AnalyticsBootstrap` / `HttpAnalyticsProvider` / `@saas/analytics` consent gate (`apps/web/src/components/analytics-bootstrap.tsx`, `packages/analytics/src/index.ts`) — Implemented (Phase 14)
+
+1. The single abstraction every component calls (`track`/`identify`/`page`)
+   instead of a vendor SDK; gates every call on `consentGranted`, so nothing
+   is sent before consent (or after rejection) — never loads any third-party
+   script or sets its own cookie (first-party, cookieless by construction).
+2. `AnalyticsBootstrap` is mounted once, globally, as a sibling in
+   `apps/web/src/app/layout.tsx`; `track()`/`identify()`/`page()` are called
+   directly from page components (signup/login/verify-email) and nowhere
+   else.
+3. `HttpAnalyticsProvider.track()` calls `POST {NEXT_PUBLIC_API_URL}/analytics/events`,
+   no credentials, best-effort (swallows fetch errors).
+4. Receives an event name (closed to the 4 task-named events server-side)
+   and an optional flat properties object; never passed a password, token,
+   or full form payload by any caller.
+5. Returns nothing (fire-and-forget); the server responds `204`.
+6. On failure: swallowed — analytics delivery must never surface as a
+   user-visible error or block the action it's attached to.
+7. Secure: no cookie, no third-party script, no credentials on the request;
+   the server independently allowlists event names and strips
+   email/JWT/UUID-shaped property values (see the `AnalyticsService` entry
+   below) — defense in depth, not reliant on the client alone.
+8. Fixed in this phase (**BUG-026**, same finding as the banner's fix):
+   `AnalyticsBootstrap` previously configured the real provider only inside
+   its own mount effect, racing the same way the banner's consent state did —
+   fixed by configuring `activeProvider` at the component module's top level
+   instead. **Confirmed working** via a direct Playwright network-request
+   listener and the e2e suite.
+
+### `ContactService` / `ContactController` / `verifyTurnstileToken` (`apps/api/src/contact/*.ts`) — Implemented (Phase 14)
+
+1. Validates and accepts a public contact-form submission; rejects spam via
+   three independent checks — a honeypot field, a minimum-fill-time check,
+   and server-side Cloudflare Turnstile verification.
+2. `POST /contact`, called by `apps/web/src/app/contact/contact-client.tsx`;
+   throttled at 5 requests/60s per the pre-existing Redis-backed
+   `RedisThrottlerStorage`.
+3. Calls `fetch` against Cloudflare's `siteverify` endpoint (only when
+   `TURNSTILE_SECRET_KEY` is configured; otherwise logs a "Requires
+   configuration" warning and skips verification rather than silently
+   treating it as passed without saying so).
+4. Receives `{ name, email, message, website, renderedAt, turnstileToken }`,
+   validated against `@saas/validation`'s `contactFormSchema` by
+   `ZodValidationPipe` before the handler runs.
+5. Returns `200` with no body on success; on any spam-check failure, the
+   byte-identical `BadRequestException({code:"SPAM_REJECTED", ...})`
+   regardless of which specific check failed (anti-enumeration, consistent
+   with every other public endpoint in this codebase).
+6. On failure: `recordAuthMetric("spam_rejected", {path, reason})` is
+   recorded server-side (for operator visibility) before the identical
+   client-facing rejection is thrown.
+7. **Confirmed working**: `apps/api/test/phase14-contact-spam.spec.ts` (5/5)
+   — honeypot, timing, Turnstile-failure, identical-rejection-body, and a
+   genuine success case, all actually run.
+8. No message is actually delivered anywhere in this phase (no email
+   provider wired for this endpoint) — logged as `contact_form_submitted`
+   only; documented as an honest stand-in, not faked as delivered.
+
+### `AnalyticsService` / `AnalyticsController` / `stripPiiShapedValues` (`apps/api/src/analytics/*.ts`) — Implemented (Phase 14)
+
+1. Accepts a client-reported analytics event, validates its name against a
+   closed allowlist, and strips any property VALUE that looks like an
+   email, JWT, or UUID before logging it — independent of and in addition to
+   the name-based allowlist, since "never send emails, tokens or IDs in...
+   events" is a content-shape requirement, not just a key-naming one.
+2. `POST /analytics/events`, called only by `HttpAnalyticsProvider`;
+   throttled at 60 requests/60s.
+3. Logs via the shared `createLogger()` (Phase 12); no other internal
+   dependency.
+4. Receives `{ event, properties? }`, validated against
+   `@saas/validation`'s `analyticsEventSchema`
+   (`event` restricted to `ANALYTICS_EVENT_NAMES`) by `ZodValidationPipe`.
+5. Returns `204` with no body.
+6. On failure (invalid event name): rejected by the Zod pipe before the
+   handler runs — a `400`, not silently dropped or accepted.
+7. **Confirmed working**: `apps/api/test/phase14-analytics-events.spec.ts`
+   (6/6) — asserts email/JWT/UUID-shaped values are stripped and ordinary
+   values pass through, and that the event-name allowlist is enforced.
+8. No user identifier is ever accepted or logged by this endpoint — there is
+   no `userId`/`identify()` wiring anywhere in this phase's analytics path.
+
+### Signup terms-acceptance (`apps/api/src/auth/auth.service.ts`, `packages/validation/src/index.ts`) — Implemented (Phase 14)
+
+1. Records that a signing-up user accepted the current Terms version, with
+   a timestamp, as part of account creation — not a separate step that could
+   be skipped or fail independently.
+2. Inside `AuthService.signUp()`'s existing `prisma.$transaction`.
+3. Writes a `Consent` row (`{ userId, type: "terms", version:
+CURRENT_TERMS_VERSION }`) — the pre-existing, previously-unused `Consent`
+   Prisma model — in the SAME transaction as user/profile/role creation, so
+   "no partial account creation" (an existing invariant) also covers this
+   write; `createdAt` (automatic) serves as the acceptance timestamp.
+4. Receives `termsAccepted: true` as a required field on `signUpSchema`
+   (`z.literal(true, {errorMap...})` — rejects missing or `false` with a
+   clear message, structurally impossible to default around).
+5. Returns the created user as before; the `Consent` row has no observable
+   API shape of its own in this phase.
+6. On failure: the whole transaction rolls back, same as any other
+   signup-time failure — no user is created without a recorded acceptance.
+7. Secure: `termsAccepted` is a plain boolean gate, not itself sensitive;
+   recorded via the same transaction boundary already used for every other
+   signup-time write.
+8. **Confirmed working**: `apps/api/test/phase14-terms-acceptance.spec.ts`
+   — schema-level tests actually run (3/4); the `Consent`-row-creation
+   integration test is skip-clean, Requires manual verification against a
+   real database.
+
+### Privacy / Terms / Contact pages, custom 404/500 (`apps/web/src/app/{privacy,terms,contact}/page.tsx`, `not-found.tsx`, `global-error.tsx`) — Implemented (Phase 14)
+
+1. Static legal pages (Privacy, Terms) marked "Draft — requires legal
+   review" throughout, with placeholder controller/processor/retention
+   values rather than fabricated real text; a contact form page; an
+   enhanced 404 page (adds a suggested-links nav) and 500 page (`global-error.tsx`,
+   adds a "Go home" link alongside the pre-existing `reset()` retry button).
+2. Rendered by Next's App Router file conventions — no manual wiring.
+3. `terms/page.tsx` imports `CURRENT_TERMS_VERSION` from `@saas/validation`
+   to display the exact version a signup acceptance will reference.
+4. Receives no props/input (static content pages).
+5. Returns static HTML; `not-found.tsx`'s convention makes Next return a
+   real HTTP 404 status automatically (not something this file controls
+   directly).
+6. N/A — no runtime failure mode beyond what Next itself handles.
+7. No PII/secrets in any of these pages; all contact details are
+   placeholders pending real legal text.
+8. **Confirmed working** (404 status, nav links):
+   `tests/e2e/phase14-legal-consent.spec.ts`. **Requires manual verification**
+   for the actual legal content (explicitly marked "Draft" in-page, per the
+   task's own done-when condition) — no Impressum page created; see
+   FINDINGS.md.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

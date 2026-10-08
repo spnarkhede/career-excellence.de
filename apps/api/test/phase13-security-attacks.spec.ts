@@ -42,13 +42,13 @@ describe("Self-role-assignment: every exported Zod schema strips unknown fields"
     [
       "signUpSchema",
       validation.signUpSchema,
-      { email: "a@example.com", password: "a-strong-password-123" },
-    ], // secret-scan-ignore-line: fake fixture
+      { email: "a@example.com", password: "a-strong-password-123", termsAccepted: true }, // secret-scan-ignore-line: fake fixture
+    ],
     [
       "loginSchema",
       validation.loginSchema,
-      { email: "a@example.com", password: "a-strong-password-123" },
-    ], // secret-scan-ignore-line: fake fixture
+      { email: "a@example.com", password: "a-strong-password-123" }, // secret-scan-ignore-line: fake fixture
+    ],
     [
       "requestPasswordResetSchema",
       validation.requestPasswordResetSchema,

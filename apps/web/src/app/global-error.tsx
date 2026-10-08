@@ -9,9 +9,14 @@ export default function GlobalError({ reset }: { error: Error; reset: () => void
           <p className="text-muted-foreground">
             An unexpected error occurred. Our team has been notified.
           </p>
-          <button onClick={() => reset()} className="underline">
-            Try again
-          </button>
+          <div className="flex gap-4">
+            <button onClick={() => reset()} className="underline">
+              Try again
+            </button>
+            <a href="/" className="underline">
+              Go home
+            </a>
+          </div>
         </main>
       </body>
     </html>

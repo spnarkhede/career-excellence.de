@@ -25,10 +25,13 @@ describe("signup integrity (real database)", () => {
   }) => {
     if (!dbReachable) skip();
     const email = `${EMAIL_PREFIX}case@example.test`;
-    await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+    await authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx);
 
     await expect(
-      authService.signUp({ email: email.toUpperCase(), password: TEST_PASSWORD }, ctx),
+      authService.signUp(
+        { email: email.toUpperCase(), password: TEST_PASSWORD, termsAccepted: true },
+        ctx,
+      ),
     ).rejects.toThrow(/already exists/i);
 
     // The Zod `emailSchema` (`.trim().toLowerCase()`) normalizes whitespace/case before
@@ -52,7 +55,9 @@ describe("signup integrity (real database)", () => {
     );
 
     await Promise.all(
-      emails.map((email) => authService.signUp({ email, password: TEST_PASSWORD }, ctx)),
+      emails.map((email) =>
+        authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx),
+      ),
     );
 
     const users = await prisma.user.findMany({ where: { email: { in: emails } } });
@@ -75,8 +80,8 @@ describe("signup integrity (real database)", () => {
     const email = `${EMAIL_PREFIX}same-email-race@example.test`;
 
     const results = await Promise.allSettled([
-      authService.signUp({ email, password: TEST_PASSWORD }, ctx),
-      authService.signUp({ email, password: "a-different-password-456" }, ctx), // secret-scan-ignore-line: fake fixture password
+      authService.signUp({ email, password: TEST_PASSWORD, termsAccepted: true }, ctx),
+      authService.signUp({ email, password: "a-different-password-456", termsAccepted: true }, ctx), // secret-scan-ignore-line: fake fixture password
     ]);
 
     const fulfilled = results.filter((r) => r.status === "fulfilled");

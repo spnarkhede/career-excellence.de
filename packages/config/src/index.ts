@@ -28,6 +28,11 @@ export const publicEnvSchema = z.object({
   // reads this, since a public env var can't know the server's runtime
   // secure/domain config.
   NEXT_PUBLIC_SESSION_COOKIE_NAME: z.string().default("app_session"),
+  // Phase 14 task 9: Cloudflare Turnstile's SITE key (public by design,
+  // unlike TURNSTILE_SECRET_KEY above) — empty means the widget isn't
+  // rendered at all ("Requires configuration"), not silently rendered with
+  // a placeholder that would never actually verify.
+  NEXT_PUBLIC_TURNSTILE_SITE_KEY: z.string().optional().default(""),
 });
 
 export const privateEnvSchema = z.object({
@@ -82,6 +87,18 @@ export const privateEnvSchema = z.object({
   // Off by default: an external dependency on the signup/reset path should be an
   // explicit opt-in, not a surprise outage risk.
   FEATURE_BREACHED_PASSWORD_CHECK: z.coerce.boolean().default(false),
+  // Phase 14 task 9 ("a privacy-friendly challenge... verified on the
+  // server"): Cloudflare Turnstile's server-side secret, used to verify a
+  // client-submitted token against Cloudflare's siteverify API. Empty (the
+  // default) means Turnstile verification is skipped — contact.service.ts
+  // documents this as "Requires configuration," never silently pretending
+  // a missing secret means "verification passed."
+  TURNSTILE_SECRET_KEY: z.string().default(""),
+  // The minimum time (ms) that must elapse between the contact form
+  // rendering and the submission reaching the server — checklist "minimum
+  // fill time." 3 seconds is generous for a human, far too fast for a bot
+  // that submits the moment the page's HTML is fetched.
+  CONTACT_FORM_MIN_FILL_TIME_MS: z.coerce.number().int().nonnegative().default(3_000),
 
   API_PORT: z.coerce.number().int().positive().default(4000),
   // Empty (the default) means "don't set a Domain attribute at all" — a host-only

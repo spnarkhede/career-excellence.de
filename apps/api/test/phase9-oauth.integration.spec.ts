@@ -27,7 +27,10 @@ function fakeAdapter(
 async function createActiveUser(suffix: string): Promise<{ email: string; userId: string }> {
   const authService = new AuthService();
   const email = `${EMAIL_PREFIX}${suffix}@example.test`;
-  const signUpResult = await authService.signUp({ email, password: TEST_PASSWORD }, ctx);
+  const signUpResult = await authService.signUp(
+    { email, password: TEST_PASSWORD, termsAccepted: true },
+    ctx,
+  );
   await prisma.user.update({ where: { email }, data: { status: "active" } });
   const user = await prisma.user.findUniqueOrThrow({ where: { email: signUpResult.email } });
   return { email, userId: user.id };

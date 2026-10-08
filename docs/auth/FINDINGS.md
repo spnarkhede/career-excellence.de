@@ -1722,3 +1722,291 @@ backoff: { type: "exponential", delay: 5000 } }` to the BullMQ `Queue`
   `phase8-password-reset.integration.spec.ts` (unaffected by the shared
   `defaultJobOptions` change). Requires manual verification against a
   real Redis/Postgres for the actual retry behavior.
+
+### BUG-021: No "browser session" cookie option existed — every auth cookie always carried a persistent Max-Age
+
+- **Label:** Confirmed bug
+- **Severity:** LOW — functionally secure either way (HttpOnly/Secure/
+  SameSite unaffected); purely a missing choice for users who don't want
+  their session to survive closing the browser.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/auth.controller.ts` `setSessionCookies()`;
+  `packages/security/src/index.ts` `sessionCookieOptions()`; `packages/validation/src/index.ts` `loginSchema`
+- **Exact location:** `sessionCookieOptions({ ..., maxAgeSeconds: env.AUTH_ACCESS_TOKEN_TTL, ... })` —
+  always called with a concrete `maxAgeSeconds`, never omitted.
+- **Problem:** Stage 5 feature #74 requires both a persistent "remember me"
+  cookie (Max-Age equal to the absolute lifetime) and a "browser session"
+  cookie (no Max-Age at all, discarded on browser restart). Only the
+  persistent form existed.
+- **Root cause:** `CookieOptions.maxAgeSeconds` was a required field, and
+  every call site always supplied a value; there was no code path that
+  omitted the Max-Age/Expires attribute.
+- **Trigger:** Any login where the user does not want a persistent session.
+- **Impact:** Users had no way to get a session that ends when the browser
+  closes — every login was effectively "remember me," whether wanted or not.
+- **Reproduction steps:** 1. Call `POST /auth/login`. 2. Inspect the
+  `Set-Cookie` headers. 3. Every one always carries `Max-Age`, regardless
+  of any client preference.
+- **Expected behavior:** A `rememberMe: false` login omits Max-Age on every
+  auth cookie (session cookie, discarded at browser close).
+- **Actual behavior (before fix):** Max-Age always present.
+- **Why it happens:** See root cause.
+- **Related components:** `apps/web` login form (not changed in this batch —
+  no UI checkbox wired up yet; the server-side capability now exists ahead
+  of it).
+- **Recommended fix (applied):** Made `CookieOptions.maxAgeSeconds` optional;
+  `sessionCookieOptions()` omits the `maxAge` key entirely when undefined.
+  Added `rememberMe` (default `true`) to `loginSchema`. `setSessionCookies()`
+  takes a `persistent` parameter (default `true`, preserving existing
+  behavior for every other caller — OTP/magic-link/OAuth callback — which
+  don't pass it); the login route passes `dto.rememberMe`.
+- **Regression risk:** Low — default behavior (`rememberMe: true`/
+  `persistent: true`) is byte-for-byte identical to before; only an
+  explicit `rememberMe: false` changes anything.
+- **How to test the fix:** `packages/security/src/index.spec.ts` and
+  `packages/validation/src/index.spec.ts` — actually run, 46/46 and 8/8
+  pass; full `apps/api` suite re-run, 20 files / 44 passed / 91 skipped
+  (DB-dependent) / 0 failed. Requires manual verification for the actual
+  browser cookie-persistence behavior (no browser automation available
+  here) — no `apps/web` login-form checkbox exists yet to drive
+  `rememberMe: false` from the UI.
+
+### BUG-022: Expired and invalid access tokens were indistinguishable to the client (both a generic 401)
+
+- **Label:** Confirmed bug
+- **Severity:** LOW — both cases were already correctly rejected with 401;
+  the gap was purely the missing machine-readable distinction a client
+  needs to decide whether to attempt a silent refresh.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/auth.service.ts` `verifyAccessToken()`
+- **Exact location:** Every `catch` block threw
+  `new UnauthorizedException("Invalid or expired session.")` — same
+  plain-string message regardless of which `jwt.verify` error occurred.
+- **Problem:** Stage 5 features #76 ("The server rejects expired access
+  tokens with 401 TOKEN_EXPIRED") and #96 ("Malformed or badly signed
+  tokens get 401 INVALID_TOKEN") both require a distinct `code` so the
+  client can tell "token merely expired, try a silent refresh" apart from
+  "token is garbage/forged, clear state and re-login, never loop."
+- **Root cause:** The original implementation treated every `jwt.verify`
+  failure identically, since at the time it was written only the generic
+  401 itself mattered, not which specific reason produced it.
+- **Trigger:** Any expired access token (the common, frequent case — every
+  token every 5–15 minutes) was indistinguishable from a tampered/forged
+  one (a rare, suspicious case).
+- **Impact:** A client has no reliable signal for when a silent refresh is
+  worth attempting vs. when it should immediately clear state — guessing
+  wrong in either direction either loops forever against a dead token or
+  needlessly logs out a user whose token just expired normally.
+- **Reproduction steps:** 1. Call `verifyAccessToken` with an expired
+  token. 2. Call it again with a garbage string. 3. Before the fix, both
+  exceptions carried the exact same message and no `code`.
+- **Expected behavior:** `code: "TOKEN_EXPIRED"` for an expired token;
+  `code: "INVALID_TOKEN"` for every other rejection.
+- **Actual behavior (before fix):** No `code` at all; same message either way.
+- **Why it happens:** See root cause.
+- **Related components:** `apps/api/src/common/all-exceptions.filter.ts`
+  (already forwards `body.code` from any `HttpException` into the JSON
+  response — no filter change needed, it just had nothing to forward
+  before this fix).
+- **Recommended fix (applied):** Catch `jwt.TokenExpiredError` specifically
+  and set `code: "TOKEN_EXPIRED"`; every other error (bad signature, wrong
+  issuer/audience, malformed, alg mismatch, unknown kid) sets
+  `code: "INVALID_TOKEN"`. Both still carry the same safe, generic
+  `message` as before (no new information disclosed).
+- **Regression risk:** Low — the HTTP status (401) and the `.message`
+  string are both unchanged (verified against `phase7-tokens.spec.ts`,
+  which asserts on the message); only a new `code` field is added to the
+  exception body.
+- **How to test the fix:** `apps/api/test/phase7-tokens.spec.ts` — actually
+  run, 12/12 pass (expired token, alg:none, wrong key, wrong issuer, wrong
+  audience, malformed token all still rejected the same way); full
+  `apps/api` suite re-run, 20 files / 44 passed / 91 skipped / 0 failed.
+
+### BUG-023: Refresh token's rolling "idle" window was mathematically identical to its absolute lifetime — no real idle-timeout enforcement existed
+
+- **Label:** Confirmed bug
+- **Severity:** MEDIUM — a session could remain refreshable for the full
+  30-day absolute window even if genuinely idle for all but the first
+  few minutes of it, contrary to the intended idle-timeout control.
+- **Status:** Fixed
+- **Component/file:** `apps/api/src/auth/auth.service.ts` `createSession()`/`rotateSession()`
+- **Exact location:** Both computed `refreshExpiresAt` using
+  `env.AUTH_REFRESH_TOKEN_TTL` — the exact same constant used for
+  `absoluteExpiresAt`.
+- **Problem:** Stage 5 feature #79 requires an idle timeout (e.g. 7 days
+  unused) that is shorter than, and enforced separately from, the
+  absolute lifetime (e.g. 30 days). Using the same 30-day constant for
+  both meant that from the very first rotation onward,
+  `Math.min(now + 30d, absoluteExpiresAt)` always evaluated to
+  `absoluteExpiresAt` (since `now` only increases after login) — the
+  "rolling" window collapsed to exactly the absolute ceiling, so there was
+  no shorter idle cutoff in practice.
+- **Root cause:** `AUTH_REFRESH_TOKEN_TTL` was reused for two conceptually
+  different purposes (the idle rolling window's length, and the absolute
+  ceiling's length) that happened to share a default value, masking that
+  they'd been conflated into one constant.
+- **Trigger:** Any session where the refresh token's last use is more than
+  a short idle period ago but less than 30 days since login — should be
+  rejected by an idle cutoff but previously was not.
+- **Impact:** A stolen or forgotten refresh token with no further use
+  remained valid for up to the full 30-day absolute window instead of a
+  much shorter 7-day idle window, widening the usable lifetime of a
+  compromised token.
+- **Reproduction steps:** 1. Create a session. 2. Rotate it once shortly
+  after creation. 3. Compute `refreshExpiresAt` — before the fix, it
+  equals `absoluteExpiresAt` almost immediately, not `now + 7 days`.
+- **Expected behavior:** `refreshExpiresAt` is `min(now + 7 days,
+absoluteExpiresAt)` — a genuinely shorter, independently enforced idle
+  window.
+- **Actual behavior (before fix):** `refreshExpiresAt` was `min(now + 30
+days, absoluteExpiresAt)`, collapsing to `absoluteExpiresAt`.
+- **Why it happens:** See root cause.
+- **Related components:** `packages/config/src/index.ts` (new
+  `AUTH_REFRESH_IDLE_TIMEOUT_SECONDS`, default 604800s/7 days); `.env`,
+  `.env.example`.
+- **Recommended fix (applied):** Added a distinct
+  `AUTH_REFRESH_IDLE_TIMEOUT_SECONDS` env var (default 7 days);
+  `createSession()`/`rotateSession()` now use it for the rolling window
+  instead of `AUTH_REFRESH_TOKEN_TTL`, which continues to bound only the
+  absolute ceiling, unchanged.
+- **Regression risk:** Low-medium — sessions idle for more than 7 days
+  (but less than 30) will now be rejected on their next refresh attempt
+  where they previously would have succeeded; this is the intended,
+  spec-required behavior change, not a side effect. `@saas/config`/
+  `@saas/api` typecheck pass.
+- **How to test the fix:** `@saas/config` typecheck passes (new env var
+  resolves); full `apps/api` suite re-run, 20 files / 44 passed / 91
+  skipped (DB-dependent) / 0 failed. Requires manual verification against
+  a real database for the actual 7-day-idle rejection path.
+
+### Reviewed and rejected: narrowing the refresh cookie's Path would break its `__Host-` prefix in production
+
+- **Label:** Potential risk (avoided, never shipped)
+- **Severity:** Would have been CRITICAL if shipped — a silently dropped
+  Set-Cookie header breaks every login in the normal production
+  configuration.
+- **Status:** Confirmed working (current behavior, Path=/, is correct and
+  intentional)
+- **Component/file:** `packages/security/src/index.ts` `cookieName()`,
+  `apps/api/src/auth/auth.controller.ts` `setSessionCookies()`
+- **Problem:** Stage 5 features #77/#86 ask for the refresh cookie to use
+  a narrower Path than the session cookie ("scoped to the refresh path
+  where the framework allows" / "a narrower path... where possible").
+- **Why this was not implemented:** `cookieName()` applies the `__Host-`
+  prefix to the refresh cookie whenever `secure && !domain` — the normal
+  production configuration (no `API_COOKIE_DOMAIN` set, `isSecureCookies`
+  true). Per RFC 6265bis, a browser silently REJECTS any Set-Cookie header
+  for a `__Host-`-prefixed cookie unless `Path=/` (and no `Domain`). Had
+  this been narrowed to e.g. `/auth/refresh`, the refresh cookie would
+  never be set at all in production — breaking every login outright,
+  silently (no error visible to the server; the browser just never stores
+  the cookie).
+- **Decision:** Both spec items' own wording ("where the framework
+  allows" / "where possible") anticipates this exact constraint. Keeping
+  Path=/ for the refresh cookie preserves the `__Host-` guarantee (no
+  Domain, Secure, Path=/ — the strongest cookie-scoping guarantee a
+  browser offers), which is a stronger security property than path
+  narrowing would have added. The (optional, unused-by-default) `path`
+  field added to `CookieOptions`/`sessionCookieOptions()` in batch 1
+  remains available for a future non-`__Host-` configuration (e.g. an
+  explicit `API_COOKIE_DOMAIN`) where narrowing would be safe.
+- **Regression risk:** None — no behavior changed; this documents a
+  considered-and-rejected approach rather than a code change.
+- **How to verify:** `packages/security/src/index.ts` `cookieName()`'s
+  `__Host-` condition (`opts.secure && !opts.domain`); RFC 6265bis §4.1.3.7
+  (`__Host-` cookie requirements).
+
+### BUG-026: A granted analytics consent never resulted in an actual tracked event — two independent root-layout sibling components each re-established required state inside their own `useEffect`, racing against a page's own mount-time `track()` call
+
+- **Label:** Confirmed bug
+- **Severity:** MEDIUM — no analytics request before consent or after rejection
+  (the two literally-specified tests) ever fired, so the checklist's narrow
+  wording was satisfied throughout; but the feature's actual purpose — events
+  firing once a user has granted consent — was silently broken on every fresh
+  page load, caught only by an extra test written to check the positive case,
+  not by either of the two explicitly-required tests.
+- **Status:** Fixed
+- **Component/file:** `packages/analytics/src/index.ts`,
+  `apps/web/src/components/cookie-consent-banner.tsx`,
+  `apps/web/src/components/analytics-bootstrap.tsx`
+- **Exact location:** Two separate state variables, each previously
+  established only inside a `useEffect` in a component mounted as a JSX
+  sibling, later/after `{children}`, in `apps/web/src/app/layout.tsx`:
+  1. `consentGranted` (module-scope in `@saas/analytics`) — previously only
+     set by `CookieConsentBanner`'s mount effect reading `localStorage`.
+  2. `activeProvider` (same module) — previously only set by
+     `AnalyticsBootstrap`'s mount effect, swapping in the real
+     `HttpAnalyticsProvider` for the default `NoopAnalyticsProvider`.
+- **Problem:** A freshly navigated page (e.g. `/signup`, which calls
+  `track("signup_started")` on mount) runs its own mount effect before either
+  sibling's effect, because React runs a root layout's `{children}` effects
+  before effects of siblings declared after it in JSX. `track()` could
+  therefore run while `consentGranted` was still its default `false` AND/OR
+  while `activeProvider` was still the no-op default — either one alone is
+  enough to silently drop the event, with no error anywhere.
+- **Root cause:** Two instances of the same mistake: treating "re-establish
+  state needed by other components on this page" as an effect (which runs
+  only after mount, in sibling order) instead of as module-scope
+  initialization (which runs at import time, strictly before any
+  component's effects). The first instance (consent) was fixed first; fixing
+  it alone did not fix the bug, because the second instance (provider wiring)
+  had the identical shape and was only found by re-running the same failing
+  Playwright test and adding a temporary `console.log` directly inside
+  `track()` to observe `consentGranted`'s actual value at call time — which
+  showed `true` (proving the first fix worked) while the event still never
+  reached the network, isolating the remaining break to `activeProvider`.
+- **Trigger:** Any full-page navigation to a page that calls `track(...)` on
+  mount, after a prior page load had already granted analytics consent.
+- **Impact:** `signup_started`/`signup_completed`/`login`/
+  `verification_completed` — the four events this phase's task explicitly
+  names — would never actually be recorded for any real user who had already
+  consented, defeating the point of building the events at all.
+- **Reproduction steps:** 1) Visit `/`, click "Accept all". 2) Navigate (full
+  browser navigation, not a client-side link) to `/signup`. 3) Prior to the
+  fix, confirm via a network-request listener that no `POST
+/analytics/events` request is ever made, despite `localStorage` correctly
+  holding the granted consent.
+- **Expected behavior:** Once consent is granted (in this session or a prior
+  one), a page's own mount-time `track()` call reaches the real provider and
+  sends the event.
+- **Actual behavior:** It silently did not, prior to this fix.
+- **Why it happens:** See root cause.
+- **Related components:** `apps/web/src/app/layout.tsx` (the sibling
+  ordering that exposes this class of bug for any future global
+  consent/config component added the same way).
+- **Recommended fix (applied):** (1) `readStoredConsentGranted()` is now
+  called synchronously at `@saas/analytics` module-evaluation time, not
+  inside the banner's effect. (2) `AnalyticsBootstrap` now calls
+  `configureAnalyticsProvider(new HttpAnalyticsProvider(...))` at its own
+  module's top level (still inside a `"use client"` module, but outside any
+  component/effect), not inside `useEffect`. Both changes rely on the same
+  property: a client component's module body executes at import time,
+  before any component anywhere on the page runs its effects.
+- **Regression risk:** Low — the stored/consented value and the provider
+  instance are identical either way; only the timing of when each is
+  established changed. Verified via a direct Playwright network-request
+  listener (confirmed `POST /analytics/events` now fires) and the full
+  `tests/e2e/phase14-legal-consent.spec.ts` suite (6/6 passing on chromium
+  and the configured mobile project; firefox/webkit are not installed in
+  this environment and were not run).
+- **How to test the fix:** `tests/e2e/phase14-legal-consent.spec.ts`'s
+  "accepting cookies allows a subsequent tracked event to be sent" test.
+
+### Note: no Impressum (Imprint) page was created in this phase
+
+- **Label:** Missing information (a documented scope decision, not a bug)
+- **Severity:** N/A
+- **Status:** Requires manual verification
+- **Problem:** Task 2 says "If the operator is in Germany, add an Imprint
+  (Impressum) page" — nothing available in this codebase or its
+  configuration establishes the operator's actual jurisdiction.
+- **Decision:** No Impressum page was created, rather than guessing. If the
+  operator is in fact based in Germany (or otherwise subject to
+  Impressumspflicht), a human needs to confirm this and have one added —
+  `apps/web/src/app/terms/page.tsx` and `.../privacy/page.tsx` both already
+  carry a `[Company legal name]`-style placeholder pattern that a future
+  Impressum page should reuse.
+- **Regression risk:** N/A — no code change either way.
+- **How to verify:** Confirm the operator's registered jurisdiction with the
+  business owner; add `apps/web/src/app/impressum/page.tsx` (or `/imprint`)
+  only once that's confirmed.
