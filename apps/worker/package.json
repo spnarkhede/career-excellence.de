@@ -16,7 +16,7 @@
     "@saas/database": "workspace:*",
     "@saas/email": "workspace:*",
     "@saas/observability": "workspace:*",
-    "bullmq": "^5.34.0",
+    "bullmq": "^6.3.11",
     "ioredis": "^5.4.1"
   },
   "devDependencies": {

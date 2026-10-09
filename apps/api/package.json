@@ -28,7 +28,7 @@
     "@saas/types": "workspace:*",
     "@saas/utils": "workspace:*",
     "@saas/validation": "workspace:*",
-    "bullmq": "^5.34.0",
+    "bullmq": "^6.3.11",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "express": "^4.21.2",
