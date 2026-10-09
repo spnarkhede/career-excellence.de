@@ -22,8 +22,8 @@
     "@saas/security": "workspace:*"
   },
   "devDependencies": {
-    "prisma": "^6.1.0",
+    "prisma": "^7.10.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^7.0.2"
   }
 }
