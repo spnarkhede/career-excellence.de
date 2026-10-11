@@ -1634,6 +1634,104 @@ CURRENT_TERMS_VERSION }`) — the pre-existing, previously-unused `Consent`
    task's own done-when condition) — no Impressum page created; see
    FINDINGS.md.
 
+### `buildPageMetadata()` / SEO helper (`apps/web/src/lib/seo.ts`) — Implemented (Phase 15)
+
+1. The single place every public/auth page builds its `Metadata` object from
+   — title, description, canonical URL, and matching OpenGraph/Twitter
+   fields — so no page relies on Next's parent/child metadata merge, which
+   REPLACES (not deep-merges) a nested object like `openGraph` the moment a
+   child page sets any field on it.
+2. Called directly from each page's own `export const metadata = buildPageMetadata({...})`.
+3. Calls nothing external; reads `NEXT_PUBLIC_APP_URL` (the same env var
+   already used by `layout.tsx`'s `metadataBase`, `robots.ts`, and
+   `sitemap.ts` before this phase).
+4. Receives `{ title, description, path, noindex? }` — every page passes a
+   COMPLETE, final title string (`title: { absolute: ... }`, bypassing the
+   root layout's title template, since every page's title already includes
+   the site name itself, deliberately, to hit the task's ~50-60 character
+   target on the final rendered title, not the un-suffixed page name).
+5. Returns a `Metadata` object with `alternates.canonical`, `openGraph`,
+   and `twitter` all set; the social preview IMAGE itself is intentionally
+   NOT set here — Next's `opengraph-image.tsx` file convention auto-fills
+   it for every page that doesn't define its own.
+6. N/A — pure, synchronous, no failure mode.
+7. No secrets; `NEXT_PUBLIC_APP_URL` is already a public env var.
+8. **Confirmed working**: `tests/e2e/phase15-seo-sharing.spec.ts` measured
+   every one of the 14 public+auth pages' rendered `<title>`/meta-description
+   lengths against a live server — all 14 land inside 50-60 / 120-160
+   characters exactly (not estimated).
+
+### Favicon/icon/OG-image files (`apps/web/src/app/{favicon.ico,icon.svg,apple-icon.tsx,opengraph-image.tsx,icon-192/route.tsx,icon-512/route.tsx,manifest.ts}`) — Implemented (Phase 15)
+
+1. Checklist task 3 (favicon.ico, an SVG icon, apple-touch-icon 180x180, web
+   manifest with 192/512 icons, theme color) and task 2 (1200x630 OG/Twitter
+   image, absolute URLs) — the entire icon/image surface area was
+   previously fully greenfield (no `public/` directory, no favicon, no
+   manifest existed in either app before this phase).
+2. Served via Next's file-based metadata conventions (`favicon.ico`,
+   `icon.svg`, `apple-icon.tsx`, `opengraph-image.tsx`) or plain custom
+   Route Handlers (`icon-192/route.tsx`, `icon-512/route.tsx` — not Next's
+   reserved `icon.tsx` convention, specifically so their URLs are stable
+   and directly referenceable from `manifest.ts`'s `icons` array).
+3. `apple-icon.tsx`/`opengraph-image.tsx`/`icon-192`/`icon-512` all render
+   via `next/og`'s `ImageResponse` (already bundled with Next, no new
+   dependency) — zero binary image authoring needed for any of them.
+   `favicon.ico` alone is a real, hand-built 16x16 32bpp BGRA ICO (written
+   byte-for-byte via a one-off Node script, since no image library is
+   installed and Next's dynamic-icon convention can't produce the literal
+   `favicon.ico` filename/format).
+4. Receives no input — all solid-color, text-free placeholder graphics
+   (`#0f172a` background, "A" glyph) consistent with the existing
+   "App Platform" brand name already used elsewhere (root layout title,
+   admin layout title) — this phase did not invent new marketing branding,
+   out of scope per AUTH_RULES rule 7.
+5. Returns real image bytes at real URLs; `manifest.ts` (`MetadataRoute.Manifest`)
+   declares `theme_color`, `name`/`short_name`, and the 192/512 icons by
+   URL+size+type.
+6. N/A — static/deterministic rendering, no runtime failure mode.
+7. No secrets; purely visual assets.
+8. **Confirmed working**: `tests/e2e/phase15-seo-sharing.spec.ts`'s
+   "favicon.ico and manifest are served" test (both return 200, manifest
+   JSON contains both icon sizes and a theme_color) and "the opengraph-image
+   URL returns 200" test; a direct live-server HTML inspection also
+   confirmed every expected `<link>`/`<meta>` tag (icon, apple-touch-icon,
+   manifest, theme-color, og:image, twitter:image) is actually present and
+   absolute where required.
+
+### Sitemap/robots/noindex (`apps/web/src/app/{sitemap.ts,robots.ts,dashboard/layout.tsx}`, `apps/admin/src/app/robots.ts`) — Implemented (Phase 15)
+
+1. Checklist task 4: a sitemap generated from public routes only, a
+   robots.txt pointing at it, and `noindex` on every auth/account/dashboard/
+   API page.
+2. `sitemap.ts`/`robots.ts` are Next file conventions, served at
+   `/sitemap.xml`/`/robots.txt`.
+3. `sitemap.ts` is hand-maintained (4 genuine marketing pages: `/`,
+   `/contact`, `/privacy`, `/terms`) rather than derived from
+   `scripts/route-matrix.ts`'s `discoverPages()` — that script classifies
+   "public" purely by the absence of a server-side `requireUser()` call,
+   which is the right question for authorization but the wrong one for
+   "belongs in a sitemap": every auth-flow page (login, signup, OTP, etc.)
+   is also technically reachable unauthenticated, yet none of them belong
+   in a search engine's sitemap.
+4. Receives no input.
+5. Returns the sitemap/robots XML/text; `dashboard/layout.tsx` returns a
+   `robots: {index:false, follow:false}` metadata object covering all 3
+   dashboard routes (`/dashboard`, `/dashboard/sessions`,
+   `/dashboard/connected-accounts`) from one file, the same pattern
+   `apps/admin/src/app/layout.tsx` already used app-wide; every individual
+   auth-flow page sets the same flag via `buildPageMetadata`'s `noindex: true`.
+6. N/A — static/deterministic.
+7. Documented explicitly (both in `robots.ts`'s own comment and
+   `dashboard/layout.tsx`'s): "robots.txt is not a security control... the
+   real access control is requireUser() on every dashboard page" — per
+   task 4's own wording. `apps/admin/src/app/robots.ts` (new, disallows
+   `/` entirely) is pure defense-in-depth on top of its pre-existing
+   layout-level `noindex` meta tag, not a new access control.
+8. **Confirmed working**: `tests/e2e/phase15-seo-sharing.spec.ts`'s sitemap
+   content assertion (contains the 4 public URLs, none of the 10 auth
+   routes or `/dashboard`), the robots.txt assertion (`Disallow: /dashboard`,
+   `Sitemap:` line present), and 10 individual per-page noindex assertions.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

@@ -1,7 +1,13 @@
 import type { Metadata } from "next";
 import { CURRENT_TERMS_VERSION } from "@saas/validation";
+import { buildPageMetadata } from "../../lib/seo";
 
-export const metadata: Metadata = { title: "Terms & Conditions" };
+export const metadata: Metadata = buildPageMetadata({
+  title: "Terms & Conditions — The Rules for Using App Platform",
+  description:
+    "Read the terms and conditions that govern your use of App Platform, including account rules, acceptable use, and liability.",
+  path: "/terms",
+});
 
 const LAST_UPDATED = "2026-10-07";
 

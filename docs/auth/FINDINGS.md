@@ -2010,3 +2010,48 @@ days, absoluteExpiresAt)`, collapsing to `absoluteExpiresAt`.
 - **How to verify:** Confirm the operator's registered jurisdiction with the
   business owner; add `apps/web/src/app/impressum/page.tsx` (or `/imprint`)
   only once that's confirmed.
+
+### BUG-027: `metadata.themeColor` was written into the root layout's `Metadata` export, where Next.js 14+ silently ignores it
+
+- **Label:** Confirmed bug
+- **Severity:** LOW — caught during this phase's own implementation, before
+  committing; the practical effect (had it shipped) would only have been a
+  missing `<meta name="theme-color">` tag — no security or functional
+  impact, just checklist task 3's "theme color" requirement silently not
+  being met despite the code appearing to set it.
+- **Status:** Fixed
+- **Component/file:** `apps/web/src/app/layout.tsx`
+- **Exact location:** The first draft's `export const metadata: Metadata = { ..., themeColor: "#0f172a" }`.
+- **Problem:** Next.js removed `themeColor` (and `colorScheme`) from the
+  `Metadata` type/resolution entirely as of Next 14, moving both into a
+  separate `viewport` export/`Viewport` type. Setting `themeColor` inside
+  `metadata` in Next 15 (this repo's version, `apps/web/package.json`:
+  `"next": "^15.2.3"`) is not a type error (the field is simply absent from
+  the type, so TypeScript would only catch this if the object were
+  over-strictly typed) and produces no runtime error either — it is a
+  silent no-op; the tag never renders.
+- **Root cause:** Authored from memory against an older Next.js API
+  surface (pre-14) without checking the installed version's actual
+  `Metadata` type first — an easy mistake since the field's removal is a
+  breaking change that doesn't fail loudly in either TypeScript or at
+  runtime.
+- **Trigger:** Not conditional — would have affected every page, always,
+  had it shipped.
+- **Impact:** None — caught and fixed before any commit; see the
+  "caught in review before being committed" precedent (BUG-014, Phase 9).
+- **Reproduction steps (of the pre-fix draft):** 1) Set
+  `metadata.themeColor` in `layout.tsx`. 2) Build and inspect the rendered
+  `<head>`. 3) No `<meta name="theme-color">` tag appears anywhere.
+- **Expected behavior:** A `<meta name="theme-color" content="#0f172a">`
+  tag present on every page.
+- **Actual behavior:** Absent, in the pre-fix draft.
+- **Why it happens:** See root cause.
+- **Related components:** None beyond this one field; `viewport.themeColor`
+  is otherwise independent of every other metadata field this phase set.
+- **Recommended fix (applied):** Moved `themeColor` out of the `metadata`
+  export into a separate `export const viewport: Viewport = { themeColor: "#0f172a" }`.
+- **Regression risk:** None — this was never in a committed state.
+- **How to test the fix:** Direct inspection of the rendered `<head>` on a
+  live `next dev` server confirms
+  `<meta name="theme-color" content="#0f172a"/>` is present — done as part
+  of this phase's live verification (see PROGRESS.md Phase 15 detail).

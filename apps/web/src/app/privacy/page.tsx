@@ -1,6 +1,12 @@
 import type { Metadata } from "next";
+import { buildPageMetadata } from "../../lib/seo";
 
-export const metadata: Metadata = { title: "Privacy Policy" };
+export const metadata: Metadata = buildPageMetadata({
+  title: "Privacy Policy — How App Platform Handles Your Data",
+  description:
+    "Learn what personal data App Platform collects, why we collect it, and the rights you have over your information under this policy.",
+  path: "/privacy",
+});
 
 const LAST_UPDATED = "2026-10-07";
 

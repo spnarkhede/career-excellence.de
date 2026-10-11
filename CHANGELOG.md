@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-11
+
+### Added
+
+- `apps/web/src/lib/seo.ts` (`buildPageMetadata()`) — every public and
+  auth-flow page now declares a complete, self-contained title,
+  description, canonical URL, and OpenGraph/Twitter metadata object;
+  titles land in 50-60 characters and descriptions in 120-160 characters,
+  measured against a live server.
+- Social preview image: `apps/web/src/app/opengraph-image.tsx`, a
+  1200x630 `next/og` `ImageResponse` applied app-wide via Next's
+  file-convention inheritance; Twitter's `summary_large_image` card reuses
+  the same image automatically.
+- Favicon/icon/manifest, built from scratch (none existed before):
+  `favicon.ico` (hand-built 16x16 ICO), `icon.svg`, `apple-icon.tsx`
+  (180x180), and `manifest.ts` (192/512 icons, `theme_color`).
+- Rewrote `sitemap.ts` to the 4 genuine public marketing pages only
+  (`/`, `/contact`, `/privacy`, `/terms`); added `robots: {index:false,
+follow:false}` to every auth-flow page and a shared
+  `apps/web/src/app/dashboard/layout.tsx` covering all 3 dashboard routes;
+  added `apps/admin/src/app/robots.ts` as defense-in-depth.
+- `tests/e2e/phase15-seo-sharing.spec.ts` — 18 tests covering every DONE
+  WHEN condition, actually run against a live server on both the
+  chromium and mobile Playwright projects.
+
+### Changed
+
+- Split `login`/`signup`/`forgot-password` from single `"use client"`
+  files (which cannot export `metadata`) into server `page.tsx` +
+  `*-client.tsx` pairs, matching the pattern already used by
+  verify-email/magic-link/reset-password/otp.
+
+### Fixed
+
+- **BUG-027**: `metadata.themeColor` in the root layout was silently
+  ignored by Next 15 (removed from the `Metadata` type in Next 14+) —
+  caught before committing; moved to a separate `viewport` export.
+
+### Notes
+
+- This phase built SEO/sharing infrastructure, not new marketing copy or
+  brand assets — every title/description/placeholder graphic reuses the
+  existing "App Platform" name already present elsewhere in the
+  codebase, per the phase's own scope.
+
 ## [0.15.0] - 2026-10-08
 
 ### Added

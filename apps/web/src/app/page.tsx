@@ -1,5 +1,14 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Button } from "@saas/ui";
+import { buildPageMetadata } from "../lib/seo";
+
+export const metadata: Metadata = buildPageMetadata({
+  title: "App Platform — Secure Authentication & Authorization Starter",
+  description:
+    "A secure, product-neutral SaaS starter platform with authentication, authorization, and infrastructure already built — start shipping product features today.",
+  path: "/",
+});
 
 export default function HomePage() {
   return (
