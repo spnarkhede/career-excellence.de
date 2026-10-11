@@ -130,7 +130,14 @@ export function SignUpClient() {
       </div>
 
       <div className="flex items-start gap-2">
-        <input id="termsAccepted" type="checkbox" className="mt-1" {...register("termsAccepted")} />
+        {/* Phase 16 task 5: h-6/w-6 (24px) — a bare, unstyled checkbox is
+            typically well under the WCAG 2.5.8 24x24px touch-target minimum. */}
+        <input
+          id="termsAccepted"
+          type="checkbox"
+          className="mt-1 h-6 w-6 shrink-0"
+          {...register("termsAccepted")}
+        />
         <Label htmlFor="termsAccepted" className="text-sm font-normal">
           I agree to the{" "}
           <a href="/terms" target="_blank" rel="noreferrer" className="underline">

@@ -18,6 +18,7 @@ out/
 coverage/
 playwright-report/
 test-results/
+.lighthouseci/
 
 # Logs
 *.log

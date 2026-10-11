@@ -136,6 +136,16 @@ const API_MANIFEST: ApiManifestEntry[] = [
     access: "permission",
     permission: "profile.update.own",
   },
+
+  // contact.controller.ts / analytics.controller.ts (Phase 14) — both are
+  // public by design: contact is a public form, analytics events are only
+  // ever sent client-side after consent, before any session exists.
+  { file: "apps/api/src/contact/contact.controller.ts", methodName: "submit", access: "public" },
+  {
+    file: "apps/api/src/analytics/analytics.controller.ts",
+    methodName: "record",
+    access: "public",
+  },
 ];
 
 interface PageManifestEntry {
@@ -145,6 +155,11 @@ interface PageManifestEntry {
 
 const WEB_PAGE_MANIFEST: PageManifestEntry[] = [
   { routePath: "/", access: "public" },
+  // contact/privacy/terms (Phase 14) — missed when those pages were added;
+  // caught in Phase 16 by actually running `pnpm test:scripts`.
+  { routePath: "/contact", access: "public" },
+  { routePath: "/privacy", access: "public" },
+  { routePath: "/terms", access: "public" },
   { routePath: "/forgot-password", access: "public" },
   { routePath: "/login", access: "public" },
   { routePath: "/magic-link", access: "public" },

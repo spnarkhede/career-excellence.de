@@ -97,6 +97,9 @@ jobs:
       - name: Check client bundle for leaked secret names
         run: pnpm check:bundle-secrets
 
+      - name: Image size budget (Phase 16 task 2)
+        run: pnpm check:image-budget
+
       - name: Dependency audit
         run: pnpm audit --audit-level=high || true
 
@@ -108,6 +111,32 @@ jobs:
         env:
           NEXT_PUBLIC_APP_URL: http://localhost:3000
           NEXT_PUBLIC_API_URL: http://localhost:4000
+
+      - name: Lighthouse CI (Phase 16 task 3 — Core Web Vitals + JS size budgets)
+        # Runs against apps/web's own production build (already built above by
+        # `pnpm build`) via `next start` — see lighthouserc.json. Covers / , /login,
+        # /signup; /dashboard is excluded (needs an authenticated session this job
+        # has no backend/database to provide — see docs/auth/FINDINGS.md).
+        run: pnpm lhci
+        env:
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          NEXT_PUBLIC_API_URL: http://localhost:4000
+
+  link-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check for broken links in documentation (Phase 16 task 6)
+        run: pnpm check:links
 
   security-scan:
     runs-on: ubuntu-latest

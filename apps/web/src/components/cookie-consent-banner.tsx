@@ -93,7 +93,15 @@ export function CookieConsentBanner() {
                   Required for login and security. Always on.
                 </p>
               </div>
-              <input type="checkbox" checked disabled aria-label="Strictly necessary (always on)" />
+              {/* Phase 16 task 5: h-6/w-6 (24px) on all 3 checkboxes below —
+                  a bare checkbox is typically under the 24x24px minimum. */}
+              <input
+                type="checkbox"
+                checked
+                disabled
+                aria-label="Strictly necessary (always on)"
+                className="h-6 w-6 shrink-0"
+              />
             </div>
             <div className="flex items-center justify-between gap-4">
               <div>
@@ -107,6 +115,7 @@ export function CookieConsentBanner() {
                 checked={analytics}
                 onChange={(e) => setAnalytics(e.target.checked)}
                 aria-label="Analytics cookies"
+                className="h-6 w-6 shrink-0"
               />
             </div>
             <div className="flex items-center justify-between gap-4">
@@ -121,6 +130,7 @@ export function CookieConsentBanner() {
                 checked={marketing}
                 onChange={(e) => setMarketing(e.target.checked)}
                 aria-label="Marketing cookies"
+                className="h-6 w-6 shrink-0"
               />
             </div>
           </div>

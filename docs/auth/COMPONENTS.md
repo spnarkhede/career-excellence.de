@@ -1732,6 +1732,71 @@ CURRENT_TERMS_VERSION }`) — the pre-existing, previously-unused `Consent`
    routes or `/dashboard`), the robots.txt assertion (`Disallow: /dashboard`,
    `Sitemap:` line present), and 10 individual per-page noindex assertions.
 
+### `ring` focus-indicator color token (`packages/design-tokens/src/index.ts`, `apps/{web,admin}/tailwind.config.mjs`) — Implemented (Phase 16)
+
+1. The color every `focus-visible:ring-ring` utility in `packages/ui`
+   resolves to — fixes **BUG-028**: this token never existed before this
+   phase, so every Button/Input's keyboard focus ring silently rendered
+   as nothing (the native outline was separately suppressed by
+   `focus-visible:outline-none`).
+2. Consumed by `packages/ui/src/components/{button,form}.tsx` via
+   Tailwind's `ring-ring` utility class.
+3. No runtime dependency — a static color value.
+4. N/A — a design token, not a function.
+5. Compiles into every focused Button/Input's `box-shadow`.
+6. N/A — no failure mode.
+7. Reuses `primary`'s exact HSL value (not a new color) — already
+   confirmed to clear the WCAG 1.4.11 non-text-contrast 3:1 minimum
+   against `background`.
+8. **Confirmed working**: `tests/e2e/phase16-images-speed-contrast-mobile.spec.ts`'s
+   focus-visibility test, actually run against a live server, asserting
+   the focused element's computed `box-shadow` is not `"none"`.
+
+### Touch-target sizing fixes (`packages/ui/src/components/password-input.tsx`, `apps/web/src/app/(auth)/signup/signup-client.tsx`, `apps/web/src/components/{cookie-consent-banner,footer}.tsx`) — Implemented (Phase 16)
+
+1. Fixes **BUG-030**: the password-visibility toggle button and 4
+   checkboxes (signup terms-acceptance + 3 cookie-consent categories)
+   were under the WCAG 2.5.8 24x24px touch-target minimum; the footer's
+   4 nav links/button were under 24px tall.
+2. Pure CSS/className changes — no behavioral change to any of these
+   controls.
+3. N/A.
+4. N/A.
+5. Larger hit areas (32px toggle, 24px checkboxes, 24px-min-height footer
+   items); no visual redesign.
+6. N/A — no failure mode.
+7. N/A — not security-relevant.
+8. **Confirmed working**: 3 dedicated `boundingBox()` assertions in
+   `tests/e2e/phase16-images-speed-contrast-mobile.spec.ts`, each actually
+   measuring the live-rendered element against the 24x24px minimum.
+
+### Lint/CI gates: jsx-a11y, image budget, Lighthouse CI, link checker (`eslint.config.js`, `scripts/check-image-budget.ts`, `lighthouserc.json`, `.github/workflows/ci.yml`) — Implemented (Phase 16)
+
+1. Checklist tasks 1 (alt-text lint rule), 2 (image size budget), 3
+   (Lighthouse CI budgets), 6 (link checker) — four separate CI/lint
+   gates, each genuinely wired and runnable, though tasks 1-2 have
+   nothing to currently flag (zero images exist in this codebase).
+2. `jsx-a11y` runs as part of the existing `pnpm lint`; the rest run as
+   new, separate `pnpm check:image-budget` / `pnpm lhci` / `pnpm check:links`
+   scripts, wired into new/existing `.github/workflows/ci.yml` steps.
+3. `pnpm lhci` calls `pnpm --filter @saas/web start` against an already-
+   built app; `pnpm check:links` crawls every `**/*.md` file.
+4. N/A (CI-time tooling, not application runtime).
+5. Each exits non-zero on a real violation, fed directly into CI's own
+   pass/fail.
+6. On failure: `lhci`/`check:image-budget`/`check:links` all print the
+   specific file/URL/metric that failed, matching this repo's existing
+   `check:bundle-secrets`/`check:cycles` convention.
+7. N/A — none of these touch secrets or auth.
+8. **Confirmed working** for jsx-a11y (verified it actually flags a
+   missing alt, via a temporary smoke-test file, then removed) and
+   `check:image-budget` (unit-tested + run for real). **Confirmed
+   working** for Lighthouse CI (run locally against a real production
+   build — see PROGRESS.md for the actual measured numbers). **Unable to
+   verify** for the link checker in this specific sandboxed environment
+   (environment-specific issue unrelated to repo content — full
+   root-cause investigation in FINDINGS.md); will run for real in CI.
+
 ## Component inventory (Authentication map checklist)
 
 ### 1. Every login page — Planned

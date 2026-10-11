@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-11
+
+### Added
+
+- `eslint-plugin-jsx-a11y` (`jsx-a11y/alt-text`, `jsx-a11y/img-redundant-alt`)
+  across apps/web, apps/admin, packages/ui — forward-looking (no
+  `<img>`/`<Image>` exists anywhere in this codebase yet).
+- `scripts/check-image-budget.ts` — a 200KiB-per-image CI budget check,
+  plus `images.formats: ["image/avif", "image/webp"]` in both apps'
+  `next.config.mjs`.
+- `lighthouserc.json` + a new `pnpm lhci` script — Core Web Vitals (LCP,
+  CLS, TBT-as-INP-lab-proxy) and a JS-size budget against `/`, `/login`,
+  `/signup`, wired into CI.
+- `linkinator` + a new `pnpm check:links` script and CI job, scanning
+  every markdown file for broken links.
+- `tests/e2e/phase16-images-speed-contrast-mobile.spec.ts` — 22 tests
+  covering every Phase 16 DONE WHEN condition that could be run in this
+  environment, extending Phase 11's existing 360px/login-only viewport
+  test to 360/768/1280px across 4 pages, plus explicit touch-target and
+  focus-visibility assertions.
+- A `ring` color token (`packages/design-tokens`), wired into both apps'
+  Tailwind configs.
+
+### Fixed
+
+- **BUG-028**: every `Button`/`Input` had zero visible keyboard focus
+  indicator — `ring-ring` referenced a `ring` color token that never
+  existed, while the native focus outline was separately suppressed.
+- **BUG-029**: 5 routes added in Phase 14 were never added to
+  `scripts/route-matrix.spec.ts`'s manifest, because neither Phase 14
+  nor 15 ran the root-level `pnpm test:scripts` during their own
+  verification.
+- **BUG-030**: the password-visibility toggle, 4 checkboxes (signup
+  terms acceptance + 3 cookie-consent categories), and the footer's 4
+  nav items were all under the WCAG 2.5.8 24x24px touch-target minimum.
+
+### Notes
+
+- No dark theme exists anywhere in this codebase — "WCAG 2.2 AA contrast
+  in both light and dark themes" could only be verified for light, the
+  one theme that's implemented. Documented as a scope decision, not a
+  gap silently ignored.
+- The link checker could not be verified locally in this session's
+  sandboxed environment (a reproducible, well-isolated issue external to
+  linkinator's own code and unrelated to any repo content) — the
+  script/CI wiring itself is correct and will run for real on every PR.
+
 ## [0.16.0] - 2026-10-11
 
 ### Added

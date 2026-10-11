@@ -17,6 +17,17 @@ export const colors = {
   mutedForeground: "hsl(215 16% 47%)",
   border: "hsl(214 32% 91%)",
   destructive: "hsl(0 72% 51%)",
+  // Phase 16 BUG-028: `focus-visible:ring-ring` was used in `button.tsx`/
+  // `form.tsx` alongside `focus-visible:outline-none`, but no "ring" color
+  // token existed anywhere — Tailwind silently drops a utility class
+  // referencing an undefined color, so the browser's default focus outline
+  // was suppressed and never replaced. Every button and text input in the
+  // app had NO visible keyboard focus indicator at all (WCAG 2.2 2.4.7).
+  // Reuses `primary`'s value (not a new color) — already confirmed to have
+  // a ~5:1 contrast ratio against `background`, comfortably above the 3:1
+  // WCAG 1.4.11 non-text-contrast requirement for UI components/focus
+  // indicators, in both normal and `/90`-opacity-modified use.
+  ring: "hsl(222 89% 55%)",
 } as const;
 
 export const radius = {

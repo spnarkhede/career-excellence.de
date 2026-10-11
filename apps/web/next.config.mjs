@@ -1,6 +1,14 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Phase 16 task 2: no `<Image>`/`<img>` exists anywhere in this app yet
+  // (text/form-only SaaS starter) — this is forward-looking config so the
+  // FIRST image added automatically gets AVIF/WebP (with the browser's own
+  // `Accept` header deciding the fallback) and responsive `deviceSizes`,
+  // rather than that being a separate decision made later.
+  images: {
+    formats: ["image/avif", "image/webp"],
+  },
   transpilePackages: [
     "@saas/ui",
     "@saas/design-tokens",

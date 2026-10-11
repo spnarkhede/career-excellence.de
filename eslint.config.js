@@ -1,4 +1,5 @@
 import js from "@eslint/js";
+import jsxA11y from "eslint-plugin-jsx-a11y";
 import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 
@@ -61,6 +62,20 @@ export default [
     files: ["**/*.spec.ts", "**/*.spec.tsx", "**/test/**/*.ts"],
     rules: {
       "@typescript-eslint/no-explicit-any": "off",
+    },
+  },
+  {
+    // Phase 16 task 1: "A lint rule fails on missing alt." No `<img>`/
+    // `<Image>` exists anywhere in apps/web or apps/admin today (this is a
+    // text/form-only app), so this has nothing to actually flag yet — it's
+    // a forward-looking gate so the FIRST image anyone adds is forced to
+    // carry (or explicitly omit, for a decorative image) alt text, rather
+    // than this being caught in review after the fact.
+    files: ["apps/web/**/*.{ts,tsx}", "apps/admin/**/*.{ts,tsx}", "packages/ui/**/*.{ts,tsx}"],
+    plugins: { "jsx-a11y": jsxA11y },
+    rules: {
+      "jsx-a11y/alt-text": "error",
+      "jsx-a11y/img-redundant-alt": "error",
     },
   },
 ];

@@ -2055,3 +2055,248 @@ days, absoluteExpiresAt)`, collapsing to `absoluteExpiresAt`.
   live `next dev` server confirms
   `<meta name="theme-color" content="#0f172a"/>` is present — done as part
   of this phase's live verification (see PROGRESS.md Phase 15 detail).
+
+### BUG-028: Every `Button` and `Input` in the app had no visible keyboard focus indicator at all
+
+- **Label:** Confirmed bug
+- **Severity:** HIGH — WCAG 2.2 2.4.7 (Focus Visible) is a Level A
+  requirement, not AA; this affected every button and every text input in
+  both `apps/web` and `apps/admin` (the two shared components used
+  everywhere), making the entire app effectively unusable for pure-keyboard
+  navigation (no way to see which control is focused).
+- **Status:** Fixed
+- **Component/file:** `packages/design-tokens/src/index.ts`,
+  `apps/web/tailwind.config.mjs`, `apps/admin/tailwind.config.mjs`,
+  `packages/ui/src/components/{button,form}.tsx`
+- **Exact location:** `button.tsx:7` and `form.tsx:14` both use
+  `focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`
+  — removing the browser's native focus outline and replacing it with a
+  Tailwind "ring" utility colored by a `ring` theme color token that did
+  not exist anywhere in `packages/design-tokens` or either app's
+  `tailwind.config.mjs`.
+- **Problem:** Tailwind's JIT compiler silently drops a utility class that
+  references an undefined color — `ring-ring` compiled to nothing. Combined
+  with `outline-none` also suppressing the native focus ring, the net
+  effect was NO visible focus indicator of any kind on either component.
+- **Root cause:** The component was written assuming a "ring" color token
+  would be defined (the standard shadcn/ui pattern, which this codebase's
+  flat, non-CSS-variable `colors` object in `design-tokens` never actually
+  defined) — a token referenced by consuming code but never produced by
+  its source, with no build error anywhere in the chain to catch it
+  (Tailwind doesn't fail on an unknown color class; it just emits nothing).
+- **Trigger:** Tab to (or otherwise keyboard-focus) any button or text
+  input anywhere in `apps/web` or `apps/admin`.
+- **Impact:** A sighted keyboard-only user (or anyone using a screen
+  reader alongside sighted navigation) had no way to tell which control
+  currently has focus on the single most common interactive elements in
+  the app — present since these two shared components were first written,
+  not introduced by a recent phase.
+- **Reproduction steps:** 1) Open any page with a button or input (e.g.
+  `/login`). 2) Press Tab until a button/input is focused. 3) Prior to the
+  fix, observe no visible ring, border, or outline change at all.
+- **Expected behavior:** A clearly visible focus ring on the focused
+  control, with at least 3:1 contrast against its background (WCAG 1.4.11
+  non-text contrast, which applies to focus indicators).
+- **Actual behavior:** No visible indicator whatsoever, prior to the fix.
+- **Why it happens:** See root cause.
+- **Related components:** Every page in `apps/web`/`apps/admin` that
+  renders a `Button` or `Input` (effectively all of them) benefits from
+  this fix automatically, with no per-page change needed.
+- **Recommended fix (applied):** Added a `ring` color to
+  `packages/design-tokens/src/index.ts` (reusing `primary`'s exact value,
+  not a new color — already confirmed to have a ~5:1 contrast ratio
+  against `background`, comfortably clearing the 3:1 bar) and wired it
+  into both apps' `tailwind.config.mjs` `theme.extend.colors`.
+- **Regression risk:** Low — purely additive (a previously-undefined
+  token now resolves); no existing behavior that depended on the ring
+  being invisible could exist, since nothing could have intentionally
+  relied on a utility class that compiled to nothing.
+- **How to test the fix:** `tests/e2e/phase16-images-speed-contrast-mobile.spec.ts`'s
+  "a focused button/input shows a visible focus ring" test — asserts the
+  focused input's computed `box-shadow` is not `"none"`, actually run
+  against a live `next dev` server.
+
+### BUG-029: `scripts/route-matrix.spec.ts`'s manifest was missing 5 routes added in Phase 14 — would have caught this at the time, had `pnpm test:scripts` been run
+
+- **Label:** Confirmed bug
+- **Severity:** LOW — this is a test-infrastructure gap (an enforcement
+  mechanism silently not running), not a production defect; the routes
+  themselves (`/contact`, `/privacy`, `/terms`,
+  `contact.controller.ts#submit`, `analytics.controller.ts#record`) were
+  already correctly implemented and working — they just weren't
+  cross-checked against the route-matrix manifest Phase 10 built
+  specifically to catch an unclassified new route.
+- **Status:** Fixed
+- **Component/file:** `scripts/route-matrix.spec.ts`
+- **Exact location:** `WEB_PAGE_MANIFEST` (missing `/contact`, `/privacy`,
+  `/terms`) and `API_MANIFEST` (missing the two Phase 14 controller
+  handlers).
+- **Problem:** `pnpm test:scripts` (the root-level vitest run covering
+  `scripts/*.spec.ts`, separate from `pnpm --filter @saas/api test` /
+  `pnpm --filter @saas/web ...`) was not run during Phase 14 or Phase 15's
+  own verification — both phases ran package-scoped test commands, which
+  don't execute root-level script tests at all. Running the FULL `pnpm
+test` (or `pnpm test:scripts` directly) during this phase's own
+  verification surfaced the gap immediately.
+- **Root cause:** Two new pages (Phase 14) and two new API handlers
+  (Phase 14) were added without updating `route-matrix.spec.ts`'s
+  manifests, and the test suite that would have caught this
+  (`scripts/route-matrix.spec.ts`, run via `pnpm test:scripts`) was never
+  actually executed in either of those phases' own verification steps —
+  a process gap in how "all tests pass" was checked, not a flaw in the
+  test itself (the test is working exactly as designed: it failed the
+  moment it was actually run against the unclassified routes).
+- **Trigger:** Running `pnpm test` or `pnpm test:scripts` at all, any time
+  after Phase 14's pages/handlers were added.
+- **Impact:** None to runtime behavior — purely a missed verification
+  step. The actual access-control classification of all 5 routes was
+  already correct (all intentionally public); the manifest was just never
+  told that.
+- **Reproduction steps:** `git stash` this phase's manifest fix, run `pnpm
+test:scripts`, observe 5 failures naming each unclassified route/page.
+- **Expected behavior:** `pnpm test:scripts` passes, every route/page
+  accounted for in its manifest.
+- **Actual behavior:** 5 failures, prior to this fix.
+- **Why it happens:** See root cause.
+- **Related components:** None — isolated to the two manifest arrays.
+- **Recommended fix (applied):** Added the 5 missing entries, each
+  labeled `access: "public"` (matching their actual, already-correct
+  implementation — no `requireUser()`/`SessionGuard` on any of them, by
+  design, confirmed in Phase 14's own FINDINGS.md entries).
+- **Regression risk:** None — test-only change, no application code
+  touched.
+- **How to test the fix:** `pnpm test:scripts` — `scripts/route-matrix.spec.ts`
+  now passes 91/91 (was 86/91).
+- **Process note:** Every future phase's closing checklist should run the
+  FULL `pnpm test` (not just package-scoped test commands) at least once,
+  specifically to avoid this exact gap recurring.
+
+### BUG-030: Three interactive controls were under the WCAG 2.5.8 24x24px minimum touch-target size
+
+- **Label:** Confirmed bug
+- **Severity:** MEDIUM — none of these block the control from working
+  (click/tap still registers), but each has a real hit area well under
+  the 24x24px minimum, making it genuinely harder to activate precisely
+  on a touchscreen — most acute for the password-visibility toggle, sized
+  only by 12px text with no padding, sitting directly adjacent to the
+  password field it must not accidentally miss-tap into.
+- **Status:** Fixed
+- **Component/file:** `packages/ui/src/components/password-input.tsx`
+  (show/hide toggle), `apps/web/src/app/(auth)/signup/signup-client.tsx`
+  (terms-acceptance checkbox), `apps/web/src/components/cookie-consent-banner.tsx`
+  (3 category checkboxes)
+- **Exact location:** The toggle `<button>` had no explicit width/height
+  at all (sized only by its "Show"/"Hide" text at `text-xs`); all 4
+  checkboxes (`<input type="checkbox">`) had no explicit sizing, leaving
+  them at the browser's native default (typically 13-16px).
+- **Problem:** Each control's actual rendered hit area was under 24x24px.
+- **Root cause:** None of these were ever explicitly sized — a checkbox's
+  native default size and a text-only button's implicit size were never
+  revisited against a touch-target requirement when first written, since
+  no accessibility audit had checked for this specific criterion until
+  this phase.
+- **Trigger:** Any touchscreen tap on the password toggle or any of the 4
+  checkboxes.
+- **Impact:** Harder, more error-prone activation on touch devices;
+  no functional breakage on desktop/mouse or keyboard.
+- **Reproduction steps:** 1) Open `/login` on a touch-emulated viewport. 2) Measure the "Show password" button's bounding box. 3) Prior to the
+  fix, observe it is well under 24x24px (text-only, no padding).
+- **Expected behavior:** Every standalone interactive control is at least
+  24x24 CSS pixels.
+- **Actual behavior:** Under 24x24px, prior to the fix.
+- **Why it happens:** See root cause.
+- **Related components:** None beyond the 4 listed files.
+- **Recommended fix (applied):** Password toggle: explicit `h-8 w-8`
+  (32px) flex-centered button. All 4 checkboxes: explicit `h-6 w-6`
+  (24px, `shrink-0` so a flex parent can't compress them). Also widened
+  the footer's 4 nav links/button to `min-h-6` with `inline-flex items-center`
+  (they were plain inline text at `text-sm`, under 24px tall) — reviewed
+  and NOT applied to genuinely inline prose links (e.g. the error-summary's
+  jump links, which qualify for WCAG 2.5.8's "target is in a sentence/
+  block of text" exemption).
+- **Regression risk:** Low — purely additive sizing; no existing layout
+  depended on any of these controls being smaller than their new minimum
+  (the password input already reserves `pr-10`/40px for the toggle, more
+  than the new 32px button needs).
+- **How to test the fix:** `tests/e2e/phase16-images-speed-contrast-mobile.spec.ts`'s
+  3 touch-target tests — actually run against a live server, each
+  asserting a real measured `boundingBox()` of at least 24x24px.
+
+### Note: "both light and dark themes" (task 4) — no dark theme exists in this codebase
+
+- **Label:** Missing information (a documented scope decision, not a bug)
+- **Severity:** N/A
+- **Status:** Requires manual verification
+- **Problem:** Phase 16 task 4 asks for WCAG 2.2 AA color contrast "in
+  both light and dark themes." This codebase has no dark theme
+  implementation at all — no `next-themes`, no `ThemeProvider`, no
+  `prefers-color-scheme` handling, and `apps/web/src/app/globals.css`
+  hardcodes `color-scheme: light`. There is no dark theme to test.
+- **Decision:** Verified WCAG 2.2 AA contrast for the one theme that
+  actually exists (light) via axe's `color-contrast` rule, run as part of
+  every `.analyze()` call across `tests/e2e/{auth-ui,phase16-*}.spec.ts`
+  (12 pages total between the two files). Building a dark theme from
+  scratch is a significantly larger undertaking than a contrast audit
+  (a full second set of color tokens, a theme toggle, persistence,
+  `prefers-color-scheme` wiring) and was judged out of this phase's scope
+  — AUTH_RULES rule 7 ("do only the work scoped to the current phase").
+- **Regression risk:** N/A — no code change either way.
+- **How to verify:** If/when a dark theme is built in a later phase, every
+  axe test in this codebase already exercises color-contrast by default
+  (no rule filtering), so re-running the existing suite with a dark theme
+  active would immediately surface any AA violation — no new test
+  infrastructure would be needed, just a theme to point it at.
+
+### Note: the link-checker script could not be verified locally in this sandboxed environment (unrelated to repo content)
+
+- **Label:** Configuration issue (environment-specific, not a content bug)
+- **Severity:** N/A
+- **Status:** Unable to verify
+- **Component/file:** `scripts/` — `pnpm check:links` (via `linkinator`),
+  `.github/workflows/ci.yml`'s new `link-check` job
+- **Problem:** Running `pnpm check:links` in this sandboxed development
+  environment reports every single local markdown file as a "broken link"
+  with an HTTP 403 status — including the very first file linkinator
+  itself starts crawling (e.g. `README.md`), which is self-evidently
+  present (`Test-Path` confirms it) and not actually broken.
+- **Root cause investigation:** Methodically isolated before concluding
+  this is environment-specific, not a real bug: (1) confirmed the flagged
+  files genuinely exist on disk; (2) reproduced with `--server-root`
+  variations and `--directory-listing` enabled — same 403; (3) reproduced
+  identically in a brand-new, completely unrelated temp directory with a
+  single trivial markdown file — rules out anything about this repo's
+  content, path (e.g. the space/period in "0. New Designs"), or config;
+  (4) confirmed a plain `node:http` server on an OS-assigned port returns
+  200 normally in this same environment, and confirmed Node's native
+  `fetch()` (the same `undici` HTTP client linkinator uses) also gets a
+  normal 200 against that plain server — rules out "local servers" or
+  "undici" being blocked outright; (5) grepped the entire installed
+  `linkinator@8.1.0` package for the exact response headers seen in the
+  403 (`x-frame-options`, `content-security-policy: frame-ancestors
+'self'`, etc.) — zero matches anywhere in its source, meaning that
+  response is not generated by linkinator's own code at all. This points
+  to something external to linkinator intercepting specifically the
+  internal local-file-serving HTTP server it spins up to crawl a
+  filesystem path — most plausibly a sandbox/proxy layer in this
+  particular computer-use environment that this phase has no visibility
+  into or ability to fix.
+- **Trigger:** Any `linkinator <local-path>` invocation in this specific
+  sandboxed environment; not reproduced against real URLs (`linkinator
+https://example.com` was not affected, since that doesn't use
+  linkinator's internal local-file server at all).
+- **Impact:** The `check:links` script and its CI wiring are correctly
+  configured and will be exercised for real on every PR in
+  `.github/workflows/ci.yml`'s `link-check` job — a normal Ubuntu GitHub
+  Actions runner, a materially different environment from this sandbox.
+  This finding only means the DONE WHEN criterion "link checker reports
+  zero broken links" could not be locally confirmed in THIS session;
+  it is not evidence of an actual broken link anywhere in the repo.
+- **Recommended fix:** None needed in-repo — this is not a code or content
+  issue. If the same 403 reproduces in actual CI (unlikely, given CI runs
+  on standard GitHub-hosted Ubuntu runners with no comparable local
+  interception layer), investigate linkinator's version/Node-version
+  compatibility there specifically.
+- **Regression risk:** N/A.
+- **How to test:** Re-run `pnpm check:links` once the workflow lands in a
+  real CI run and confirm its actual pass/fail in the Actions log, which
+  this session cannot observe directly.

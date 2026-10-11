@@ -29,7 +29,10 @@ export const PasswordInput = React.forwardRef<
         aria-pressed={visible}
         aria-label={visible ? "Hide password" : "Show password"}
         onClick={() => setVisible((v) => !v)}
-        className="text-muted-foreground hover:text-foreground absolute right-2 text-xs font-medium"
+        // Phase 16 task 5: explicit h-8/w-8 (32px) — was previously sized only
+        // by its "Show"/"Hide" text at text-xs, well under the 24x24px WCAG
+        // 2.5.8 minimum touch-target size.
+        className="text-muted-foreground hover:text-foreground focus-visible:ring-ring absolute right-1 flex h-8 w-8 items-center justify-center rounded text-xs font-medium focus-visible:outline-none focus-visible:ring-2"
         tabIndex={0}
       >
         {visible ? "Hide" : "Show"}
