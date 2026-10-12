@@ -228,6 +228,12 @@ export interface CookieOptions {
    * POST, which Lax would not carry the cookie on.
    */
   sameSite?: "strict" | "lax" | "none";
+  /**
+   * Stage 5 #77/#86: "/" (the default) for every session-wide cookie; a
+   * narrower path (e.g. "/auth/refresh") for the refresh cookie specifically,
+   * so the browser only ever sends it to the one route that reads it.
+   */
+  path?: string;
 }
 
 export function sessionCookieOptions({
@@ -235,6 +241,7 @@ export function sessionCookieOptions({
   secure,
   maxAgeSeconds,
   sameSite = "lax",
+  path = "/",
 }: CookieOptions) {
   return {
     httpOnly: true,
@@ -244,7 +251,7 @@ export function sessionCookieOptions({
     // string — Express's res.cookie would otherwise serialize `Domain=`, which is
     // not the same as omitting the attribute.
     ...(domain ? { domain } : {}),
-    path: "/",
+    path,
     // Omitting `maxAge` makes this a browser-session cookie (no Max-Age/Expires
     // attribute at all) — distinct from passing `maxAge: 0`, which would delete it.
     ...(maxAgeSeconds !== undefined ? { maxAge: maxAgeSeconds * 1000 } : {}),

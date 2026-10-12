@@ -111,6 +111,41 @@ describe("sessionCookieOptions (Phase 7 checklist: cookie configuration)", () =>
   });
 });
 
+// Stage 5 #81 "Cookie configuration": "A snapshot test of cookie settings passes
+// for each environment." Mirrors exactly what apps/api/src/auth/cookie-names.ts
+// and auth.controller.ts's setSessionCookies() derive per APP_ENV, without
+// needing to reload @saas/config under different env vars.
+describe("cookie settings per environment (checklist: snapshot per environment)", () => {
+  const ACCESS_TTL = 900;
+  const REFRESH_TTL = 2_592_000;
+
+  function cookiesFor(appEnv: "local" | "preview" | "staging" | "production") {
+    const secure = appEnv !== "local";
+    return {
+      session: sessionCookieOptions({ secure, maxAgeSeconds: ACCESS_TTL, sameSite: "lax" }),
+      refresh: sessionCookieOptions({ secure, maxAgeSeconds: REFRESH_TTL, sameSite: "strict" }),
+      sessionName: cookieName("app_session", { secure }),
+      refreshName: cookieName("app_refresh", { secure }),
+    };
+  }
+
+  it("local: not Secure, no __Host- prefix (plain HTTP works in dev)", () => {
+    expect(cookiesFor("local")).toMatchSnapshot();
+  });
+
+  it("preview: Secure, __Host- prefixed", () => {
+    expect(cookiesFor("preview")).toMatchSnapshot();
+  });
+
+  it("staging: Secure, __Host- prefixed", () => {
+    expect(cookiesFor("staging")).toMatchSnapshot();
+  });
+
+  it("production: Secure, __Host- prefixed", () => {
+    expect(cookiesFor("production")).toMatchSnapshot();
+  });
+});
+
 // Phase 10 checklist item 11/explicit test 2: "Malicious returnTo values
 // rejected: https://evil.example, //evil.example, /\evil.example,
 // javascript:alert(1), encoded variants."

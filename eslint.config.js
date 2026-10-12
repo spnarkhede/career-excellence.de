@@ -78,4 +78,43 @@ export default [
       "jsx-a11y/img-redundant-alt": "error",
     },
   },
+  {
+    // Stage 5 #71 "Tokens": one designated set of modules creates/hashes/signs
+    // every auth token; every other file is blocked from importing the raw
+    // primitives directly, so a new token can't be minted by hand elsewhere
+    // (checklist: "a lint rule blocks token generation outside this module").
+    files: ["**/*.ts", "**/*.tsx"],
+    ignores: [
+      "packages/utils/src/index.ts", // generateSecureToken (raw opaque tokens)
+      "packages/security/src/server.ts", // hashPassword/hashToken/hashIp
+      "packages/security/src/server.spec.ts",
+      "packages/auth/src/tokens.ts", // one-time-token/OTP issuance
+      "packages/auth/src/oauth/pkce.ts", // PKCE verifier/challenge/state
+      "apps/api/src/auth/auth.service.ts", // JWT access-token sign/verify
+      "apps/api/test/phase7-tokens.spec.ts", // asserts against real jsonwebtoken output
+      "**/*.config.{js,mjs,ts}",
+    ],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "jsonwebtoken",
+              message:
+                "JWT signing/verification is centralized in apps/api/src/auth/auth.service.ts. Import verifyAccessToken or add a method there instead.",
+            },
+          ],
+          patterns: [
+            {
+              group: ["node:crypto", "crypto"],
+              importNames: ["randomBytes", "createHash", "createHmac", "randomInt"],
+              message:
+                "Raw token/hash primitives are centralized in @saas/utils, @saas/security/server, and @saas/auth. Use generateSecureToken/hashToken/hashPassword/issueOneTimeToken instead.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 ];

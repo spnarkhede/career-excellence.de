@@ -26,7 +26,14 @@ function getQueue(): Queue<SendEmailInput> {
     // instead of simply failing the enqueue, which the caller already wraps in a
     // try/catch (see AuthService.sendEmail's delivery-failure-tolerant pattern).
     connection.on("error", (err) => logger.error({ err }, "Email queue Redis connection error"));
-    queue = new Queue<SendEmailInput>(EMAIL_QUEUE_NAME, { connection });
+    // Stage 4 checklist "Email delivery failure": "Send email through a queue with
+    // retries." 3 attempts with exponential backoff (starting at 5s) so a transient
+    // provider/network blip is retried by the worker before the caller's own
+    // catch/log/keep-account fallback (AuthService.sendEmail) is ever reached.
+    queue = new Queue<SendEmailInput>(EMAIL_QUEUE_NAME, {
+      connection,
+      defaultJobOptions: { attempts: 3, backoff: { type: "exponential", delay: 5000 } },
+    });
   }
   return queue;
 }

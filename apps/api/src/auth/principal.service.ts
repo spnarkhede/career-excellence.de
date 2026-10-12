@@ -27,10 +27,28 @@ export class PrincipalService {
       });
     }
 
-    const userRoles = await prisma.userRole.findMany({
+    let userRoles = await prisma.userRole.findMany({
       where: { userId },
       include: { role: { include: { permissions: { include: { permission: true } } } } },
     });
+
+    // Same self-healing guarantee as the profile check above, for a user left with
+    // no role at all (stage 4 #63/#64 "repair ... idempotently" — a role, same as a
+    // profile, is required for a non-partial account). `skipDuplicates` plus a
+    // re-read on the race-lost path keeps this idempotent under concurrent requests.
+    if (userRoles.length === 0) {
+      const defaultRole = await prisma.role.findUnique({ where: { name: "user" } });
+      if (defaultRole) {
+        await prisma.userRole.createMany({
+          data: [{ userId, roleId: defaultRole.id }],
+          skipDuplicates: true,
+        });
+        userRoles = await prisma.userRole.findMany({
+          where: { userId },
+          include: { role: { include: { permissions: { include: { permission: true } } } } },
+        });
+      }
+    }
 
     const roles = userRoles.map((ur) => ur.role.name as RoleName);
     const permissions = Array.from(

@@ -1,5 +1,5 @@
 import { hashPassword, verifyPassword } from "@saas/security/server";
-import type { AuthProvider, IdentityResult } from "./types";
+import type { AuthProvider, IdentityResult } from "./types.js";
 
 interface StoredIdentity {
   email: string;

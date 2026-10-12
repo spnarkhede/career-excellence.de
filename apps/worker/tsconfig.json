@@ -1,5 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "module": "ESNext", "outDir": "./dist" },
+  "compilerOptions": {
+    "module": "ESNext",
+    "outDir": "./dist",
+    "composite": true,
+    "declaration": true
+  },
   "include": ["src"]
 }

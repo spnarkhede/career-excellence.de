@@ -7,7 +7,9 @@
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "outDir": "./dist",
-    "baseUrl": "./"
+    "baseUrl": "./",
+    "composite": true,
+    "declaration": true
   },
   "include": ["src", "test", "vitest.config.ts"]
 }

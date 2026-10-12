@@ -67,14 +67,14 @@ export function requestContext(req: Request) {
   };
 }
 
-export function setSessionCookies(res: Response, tokens: IssuedTokens) {
+export function setSessionCookies(res: Response, tokens: IssuedTokens, persistent = true) {
   res.cookie(
     sessionCookieName,
     tokens.accessToken,
     sessionCookieOptions({
       domain: cookieDomain,
       secure: isSecureCookies,
-      maxAgeSeconds: env.AUTH_ACCESS_TOKEN_TTL,
+      ...(persistent ? { maxAgeSeconds: env.AUTH_ACCESS_TOKEN_TTL } : {}),
       sameSite: "lax",
     }),
   );
@@ -84,7 +84,7 @@ export function setSessionCookies(res: Response, tokens: IssuedTokens) {
     sessionCookieOptions({
       domain: cookieDomain,
       secure: isSecureCookies,
-      maxAgeSeconds: env.AUTH_REFRESH_TOKEN_TTL,
+      ...(persistent ? { maxAgeSeconds: env.AUTH_REFRESH_TOKEN_TTL } : {}),
       // Strict, not Lax: the refresh cookie is only ever read by a same-origin
       // fetch this app's own client code makes — nothing legitimately needs it
       // sent on an incoming cross-site navigation, unlike the session cookie
@@ -102,7 +102,7 @@ export function setSessionCookies(res: Response, tokens: IssuedTokens) {
     sameSite: "lax",
     ...(cookieDomain ? { domain: cookieDomain } : {}),
     path: "/",
-    maxAge: env.AUTH_REFRESH_TOKEN_TTL * 1000,
+    ...(persistent ? { maxAge: env.AUTH_REFRESH_TOKEN_TTL * 1000 } : {}),
   });
 }
 
@@ -156,7 +156,7 @@ export class AuthController {
       requestContext(req),
       this.resolveExistingSessionId(req),
     );
-    setSessionCookies(res, tokens);
+    setSessionCookies(res, tokens, dto.rememberMe);
     // No tokens in the response body when using cookies (checklist) — only a status
     // acknowledgement; the client re-derives auth state from GET /auth/me afterward.
     return { ok: true };

@@ -1,6 +1,7 @@
 import { logger } from "@saas/observability";
 import "./processors/email.processor.js";
 import "./processors/cleanup.processor.js";
+import "./processors/account-repair.processor.js";
 
 process.on("unhandledRejection", (reason) => {
   logger.error({ reason }, "Unhandled promise rejection");
@@ -11,7 +12,7 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
-logger.info("Worker started: listening on email, cleanup, webhook-retry queues");
+logger.info("Worker started: listening on email, cleanup, webhook-retry, account-repair queues");
 
 process.on("SIGTERM", () => {
   logger.info("Worker shutting down");

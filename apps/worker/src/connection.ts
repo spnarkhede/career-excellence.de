@@ -9,4 +9,5 @@ export const QUEUE_NAMES = {
   email: "email",
   cleanup: "cleanup",
   webhookRetry: "webhook-retry",
+  accountRepair: "account-repair",
 } as const;

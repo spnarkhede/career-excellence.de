@@ -74,6 +74,12 @@ export const privateEnvSchema = z.object({
   // not used for this long is treated as expired even though its refresh token
   // hasn't reached its own rolling/absolute expiry.
   AUTH_IDLE_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(1800),
+  // Stage 5 #79 "Refresh token expiration": the refresh token's own rolling
+  // idle window — distinct from AUTH_IDLE_TIMEOUT_SECONDS above (which gates
+  // active-session inactivity at a much shorter, per-request scale). A refresh
+  // not used for this long fails even though AUTH_REFRESH_TOKEN_TTL (the
+  // absolute ceiling from login) hasn't been reached yet.
+  AUTH_REFRESH_IDLE_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(604_800),
   // Grace window after a refresh token is rotated during which presenting the
   // now-superseded token is treated as a benign race (e.g. two tabs refreshing at
   // once) and resolved to the live session, rather than as a stolen-token replay

@@ -1,0 +1,85 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`cookie settings per environment (checklist: snapshot per environment) > local: not Secure, no __Host- prefix (plain HTTP works in dev) 1`] = `
+{
+  "refresh": {
+    "httpOnly": true,
+    "maxAge": 2592000000,
+    "path": "/",
+    "sameSite": "strict",
+    "secure": false,
+  },
+  "refreshName": "app_refresh",
+  "session": {
+    "httpOnly": true,
+    "maxAge": 900000,
+    "path": "/",
+    "sameSite": "lax",
+    "secure": false,
+  },
+  "sessionName": "app_session",
+}
+`;
+
+exports[`cookie settings per environment (checklist: snapshot per environment) > preview: Secure, __Host- prefixed 1`] = `
+{
+  "refresh": {
+    "httpOnly": true,
+    "maxAge": 2592000000,
+    "path": "/",
+    "sameSite": "strict",
+    "secure": true,
+  },
+  "refreshName": "__Host-app_refresh",
+  "session": {
+    "httpOnly": true,
+    "maxAge": 900000,
+    "path": "/",
+    "sameSite": "lax",
+    "secure": true,
+  },
+  "sessionName": "__Host-app_session",
+}
+`;
+
+exports[`cookie settings per environment (checklist: snapshot per environment) > production: Secure, __Host- prefixed 1`] = `
+{
+  "refresh": {
+    "httpOnly": true,
+    "maxAge": 2592000000,
+    "path": "/",
+    "sameSite": "strict",
+    "secure": true,
+  },
+  "refreshName": "__Host-app_refresh",
+  "session": {
+    "httpOnly": true,
+    "maxAge": 900000,
+    "path": "/",
+    "sameSite": "lax",
+    "secure": true,
+  },
+  "sessionName": "__Host-app_session",
+}
+`;
+
+exports[`cookie settings per environment (checklist: snapshot per environment) > staging: Secure, __Host- prefixed 1`] = `
+{
+  "refresh": {
+    "httpOnly": true,
+    "maxAge": 2592000000,
+    "path": "/",
+    "sameSite": "strict",
+    "secure": true,
+  },
+  "refreshName": "__Host-app_refresh",
+  "session": {
+    "httpOnly": true,
+    "maxAge": 900000,
+    "path": "/",
+    "sameSite": "lax",
+    "secure": true,
+  },
+  "sessionName": "__Host-app_session",
+}
+`;

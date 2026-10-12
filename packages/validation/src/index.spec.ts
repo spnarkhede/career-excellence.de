@@ -22,7 +22,7 @@ describe("passwordSchema — NIST SP 800-63B policy", () => {
   });
 
   it("enforces no composition rules — a password of only lowercase letters is accepted", () => {
-    expect(() => passwordSchema.parse("alllowercase")).not.toThrow();
+    expect(() => passwordSchema.parse("alllowercaseletters")).not.toThrow();
   });
 
   it("allows spaces and arbitrary printable characters", () => {
