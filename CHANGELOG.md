@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-12
+
+### Added
+
+- Phase 17 (race conditions and edge cases): `apps/api/test/phase17-race-conditions.integration.spec.ts`
+  (7 real, DB-dependent concurrency tests) and `tests/e2e/phase17-race-conditions.spec.ts`
+  (6 browser-dependent tests: slow provider, offline submit, reconnect, rapid
+  navigation, reload mid-login, multi-tab), plus `docs/auth/EDGE_CASES.md`
+  documenting all 19 checklist items. No new application bug found — every
+  scenario was already protected by mechanisms from Phases 3/5/7/11; see
+  docs/auth/PROGRESS.md and docs/auth/FINDINGS.md for the full record,
+  including an environment-limitation note that the new Playwright suite did
+  not complete a live run in this session.
+
 ## [0.17.0] - 2026-10-11
 
 ### Added

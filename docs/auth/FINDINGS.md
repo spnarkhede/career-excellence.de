@@ -2300,3 +2300,52 @@ https://example.com` was not affected, since that doesn't use
 - **How to test:** Re-run `pnpm check:links` once the workflow lands in a
   real CI run and confirm its actual pass/fail in the Actions log, which
   this session cannot observe directly.
+
+### Note: Phase 17 Playwright live-browser run did not complete in this session
+
+- **Label:** Missing information (an environment limitation, not a code defect)
+- **Severity:** N/A
+- **Status:** Unable to verify
+- **Component/file:** `tests/e2e/phase17-race-conditions.spec.ts`
+- **Problem:** Repeated attempts (`npx playwright test`, `pnpm exec playwright
+test`, with and without output piping, with reduced per-test timeouts) to run
+  this phase's new Playwright suite against a live `next dev` server produced no
+  stdout at all and did not exit within the available tool-call time budget in
+  this session, even though `tsc --noEmit` and `eslint` both pass cleanly against
+  the file and it follows the exact `page.route`-mocking pattern already proven
+  (actually run) in `tests/e2e/auth-ui.spec.ts`.
+- **Root cause investigation:** A large number of leftover `node.exe` processes
+  (17 observed via `Get-Process`) were present from this session's earlier `pnpm
+dev` and repeated `vitest`/`tsc` invocations, and `Get-NetTCPConnection` found
+  no process actually listening on ports 3000/3002/4000 at the time of the hang —
+  consistent with Playwright's `webServer.reuseExistingServer` check waiting
+  (silently, no output) on a health-check `fetch` to a port nothing was bound to
+  yet, compounded by general resource contention from the other running
+  processes, rather than a defect in the test file's own logic.
+- **Trigger:** Running this specific test file's `webServer`-managed Playwright
+  invocation in this sandboxed session, with multiple prior long-running `pnpm
+dev`/test processes still alive in the background.
+- **Impact:** Every "Requires manual verification" status in
+  docs/auth/EDGE_CASES.md and the Phase 17 row of docs/TRACEABILITY.md that
+  depends on a live-browser run (items 5, 8, 10 (mid-flow), 11, 12, 14) reflects
+  "written, not confirmed running," not "confirmed working" — per AUTH_RULES.md
+  rule 13, this is recorded honestly rather than claimed as verified.
+- **Expected behavior:** `pnpm exec playwright test
+tests/e2e/phase17-race-conditions.spec.ts --project=chromium` completes and
+  reports pass/fail for all 6 tests in a clean environment.
+- **Actual behavior:** The process produced zero output and did not return
+  within this session's available time.
+- **Why it happens:** See root cause investigation above — most likely resource
+  contention / a not-yet-bound port combined with `reuseExistingServer`'s silent
+  wait, not a problem with the test code.
+- **Related components:** None — this is specific to this session's process
+  state, not the application or test code.
+- **Recommended fix:** None needed in-repo. The next session/environment should
+  start from a clean process state (no leftover `pnpm dev`/test processes) before
+  running this suite, or explicitly stop any existing dev server first so
+  Playwright's own `webServer` spawns and manages a fresh one.
+- **Regression risk:** N/A.
+- **How to test:** Re-run `pnpm exec playwright test
+tests/e2e/phase17-race-conditions.spec.ts --project=chromium` in a clean
+  environment and update docs/auth/EDGE_CASES.md's affected items from "Requires
+  manual verification" to "Confirmed working"/"Confirmed broken" per the result.
