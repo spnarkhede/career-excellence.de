@@ -49,7 +49,7 @@ function OtpForm() {
     return () => clearInterval(id);
   }, [cooldown]);
 
-  async function requestCode(e: React.FormEvent<HTMLFormElement>) {
+  async function requestCode(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
     if (submitLock.current) return;
     submitLock.current = true;
@@ -84,7 +84,7 @@ function OtpForm() {
     }
   }
 
-  async function verifyCode(e: React.FormEvent<HTMLFormElement>) {
+  async function verifyCode(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
     if (submitLock.current) return;
     submitLock.current = true;

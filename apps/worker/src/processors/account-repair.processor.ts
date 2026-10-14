@@ -15,7 +15,7 @@ import { connection, QUEUE_NAMES } from "../connection.js";
  * (no in-repo scheduler exists for either queue yet — an external cron or BullMQ
  * repeatable job must enqueue a job here; see docs/TRACEABILITY.md item #63 note).
  */
-export const accountRepairWorker = new Worker(
+const accountRepairWorker = new Worker(
   QUEUE_NAMES.accountRepair,
   async () => {
     const usersMissingProfile = await prisma.user.findMany({

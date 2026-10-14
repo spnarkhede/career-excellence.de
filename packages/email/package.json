@@ -9,6 +9,9 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "server-only": "^0.0.1"
+  },
   "devDependencies": {
     "typescript": "^5.7.2"
   }

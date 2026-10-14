@@ -19,7 +19,7 @@ const nextConfig = {
     "@saas/analytics",
     "@saas/config",
   ],
-  async headers() {
+  headers() {
     return [
       {
         source: "/:path*",

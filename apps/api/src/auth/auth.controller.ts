@@ -106,7 +106,7 @@ export function setSessionCookies(res: Response, tokens: IssuedTokens, persisten
   });
 }
 
-export function clearSessionCookies(res: Response) {
+function clearSessionCookies(res: Response) {
   res.clearCookie(sessionCookieName, { domain: cookieDomain, path: "/" });
   res.clearCookie(refreshCookieName, { domain: cookieDomain, path: "/" });
   res.clearCookie(csrfCookieName, { domain: cookieDomain, path: "/" });
@@ -205,7 +205,7 @@ export class AuthController {
   @Get("me")
   @UseGuards(SessionGuard)
   @ApiCookieAuth()
-  async me(@CurrentPrincipal() principal: Awaited<ReturnType<PrincipalService["resolve"]>>) {
+  me(@CurrentPrincipal() principal: Awaited<ReturnType<PrincipalService["resolve"]>>) {
     return { principal };
   }
 

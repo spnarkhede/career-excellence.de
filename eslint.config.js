@@ -30,7 +30,12 @@ export default [
           // Root-level JS config files (next.config.mjs, tailwind.config.mjs, etc.) sit
           // outside every package's tsconfig `include` — let the default (unchecked)
           // project handle them instead of every app re-listing them.
-          allowDefaultProject: ["apps/*/*.config.mjs", "apps/*/*.config.js", "*.config.js"],
+          allowDefaultProject: [
+            "apps/*/*.config.mjs",
+            "apps/*/*.config.js",
+            "apps/*/*.config.mts",
+            "*.config.js",
+          ],
         },
         tsconfigRootDir: import.meta.dirname,
       },
@@ -44,7 +49,16 @@ export default [
       "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/no-misused-promises": "error",
       "@typescript-eslint/await-thenable": "error",
-      "@typescript-eslint/no-deprecated": "warn",
+      "@typescript-eslint/no-deprecated": "error",
+      // Phase 18 task 3: catches an async function with no `await` inside it — usually
+      // a sign the function was meant to be async but forgot to await something, or
+      // doesn't need to be async at all (misleading callers into treating it as one).
+      "@typescript-eslint/require-await": "error",
+      // Phase 18 task 4: an empty `catch {}` silently swallows an error with no
+      // rethrow, no mapping to a catalog code, and no log — the single most common
+      // way an auth failure goes unnoticed. `allowEmptyCatch: false` is the default,
+      // stated explicitly so it can't be silently loosened later.
+      "no-empty": ["error", { allowEmptyCatch: false }],
       "no-console": ["warn", { allow: ["warn", "error"] }],
     },
   },
@@ -62,6 +76,12 @@ export default [
     files: ["**/*.spec.ts", "**/*.spec.tsx", "**/test/**/*.ts"],
     rules: {
       "@typescript-eslint/no-explicit-any": "off",
+      // Mocking an async interface (e.g. a fake `fetch` Response's `.json()`/`.text()`,
+      // or a fake OAuthProviderAdapter) with a literal return is legitimate test
+      // fixture code, not the "forgot to await" bug this rule exists to catch in
+      // production code — the production-code instances this rule found (Phase 18)
+      // were fixed directly rather than exempted.
+      "@typescript-eslint/require-await": "off",
     },
   },
   {
@@ -92,6 +112,7 @@ export default [
       "packages/auth/src/oauth/pkce.ts", // PKCE verifier/challenge/state
       "apps/api/src/auth/auth.service.ts", // JWT access-token sign/verify
       "apps/api/test/phase7-tokens.spec.ts", // asserts against real jsonwebtoken output
+      "apps/api/test/phase13-security-attacks.spec.ts", // forges attacker-controlled alg:none/HS256 tokens
       "**/*.config.{js,mjs,ts}",
     ],
     rules: {

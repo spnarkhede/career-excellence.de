@@ -4,7 +4,7 @@ import { logger } from "@saas/observability";
 import { connection, QUEUE_NAMES } from "../connection.js";
 
 /** Removes expired, unconsumed verification tokens and long-revoked sessions on a schedule. */
-export const cleanupWorker = new Worker(
+const cleanupWorker = new Worker(
   QUEUE_NAMES.cleanup,
   async () => {
     const now = new Date();

@@ -69,7 +69,7 @@ function VerifyEmailContent() {
     }
   }
 
-  async function handleResend(e: React.FormEvent<HTMLFormElement>) {
+  async function handleResend(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
     if (resendLock.current) return;
     resendLock.current = true;

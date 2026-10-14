@@ -85,11 +85,13 @@ jobs:
       - name: Duplicate code check
         run: pnpm check:duplicates
 
-      - name: Dead code / unused dependency check (informational)
-        # Real pre-existing findings exist (deps reserved for not-yet-wired features,
-        # per docs/auth/ARCHITECTURE.md's TanStack Query gap) that are out of scope to
-        # fix in this phase — reported, not yet a hard gate. See docs/auth/FINDINGS.md.
-        run: pnpm check:deadcode || true
+      - name: Dead code / unused dependency check
+        # Phase 18 task 1: a hard CI gate, not informational. Every real finding from
+        # Phase 2 was either fixed (de-exported genuinely dead exports, pinned
+        # @nestjs/schematics, routed lint-staged through a package.json script) or is
+        # an explicitly documented, reserved-for-a-future-feature exception in
+        # knip.json — see docs/auth/FINDINGS.md.
+        run: pnpm check:deadcode
 
       - name: Build
         run: pnpm build
@@ -100,8 +102,20 @@ jobs:
       - name: Image size budget (Phase 16 task 2)
         run: pnpm check:image-budget
 
-      - name: Dependency audit
+      - name: Dependency audit (informational)
+        # Phase 18 task 1: pnpm's advisory-registry audit is kept informational — it
+        # is known to be flaky/rate-limited and its pass/fail is outside this repo's
+        # control (a transient registry outage would block every PR). OSV-Scanner
+        # below (govulncheck-style, offline OSV.dev database, no registry rate limit)
+        # is the real, hard-gating vulnerability check — see docs/auth/FINDINGS.md.
         run: pnpm audit --audit-level=high || true
+
+      - name: OSV vulnerability scan (Phase 18 task 1 — hard gate)
+        uses: google/osv-scanner-action/osv-scanner-action@v2
+        with:
+          scan-args: |-
+            --lockfile=pnpm-lock.yaml
+            --recursive
 
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium firefox webkit

@@ -29,7 +29,15 @@ export interface ErrorCatalogEntry {
     | null;
 }
 
-export const AUTH_ERROR_CATALOG: Record<string, ErrorCatalogEntry> = {
+// No explicit `: Record<string, ErrorCatalogEntry>` annotation — that desugars to an
+// index signature, which makes `noUncheckedIndexedAccess` add `| undefined` to EVERY
+// property access on this object, including direct dot-notation access on a literal
+// key (checklist item 9, "type mismatches" — found and fixed in Phase 18; every call
+// site working around it with a non-null assertion would have been treating the
+// symptom, not the cause). `satisfies` below validates the same shape without
+// widening the inferred type, so direct access (`AUTH_ERROR_CATALOG.INVALID_CREDENTIALS`)
+// stays precisely typed and `AuthErrorCode` below stays a real literal union.
+export const AUTH_ERROR_CATALOG = {
   // --- Credentials / login ---
   INVALID_CREDENTIALS: {
     status: 401,

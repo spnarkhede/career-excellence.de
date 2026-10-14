@@ -21,7 +21,7 @@ function PendingEmailContent() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function submitEmail(e: React.FormEvent<HTMLFormElement>) {
+  async function submitEmail(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
@@ -35,7 +35,7 @@ function PendingEmailContent() {
     }
   }
 
-  async function verifyCode(e: React.FormEvent<HTMLFormElement>) {
+  async function verifyCode(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
     setSubmitting(true);
     setError(null);

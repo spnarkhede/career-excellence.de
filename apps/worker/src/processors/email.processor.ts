@@ -5,7 +5,7 @@ import { connection, QUEUE_NAMES } from "../connection.js";
 
 const emailProvider = new StubEmailProvider();
 
-export const emailWorker = new Worker<SendEmailInput>(
+const emailWorker = new Worker<SendEmailInput>(
   QUEUE_NAMES.email,
   async (job) => {
     await emailProvider.send(job.data);

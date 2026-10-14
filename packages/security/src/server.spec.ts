@@ -65,7 +65,7 @@ describe("isPasswordBreached", () => {
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        text: async () => `${suffix}:3730471\nUNRELATEDSUFFIX0000000000000000000:1`,
+        text: () => Promise.resolve(`${suffix}:3730471\nUNRELATEDSUFFIX0000000000000000000:1`),
       }),
     );
     expect(await isPasswordBreached(plain)).toBe(true);
@@ -76,7 +76,7 @@ describe("isPasswordBreached", () => {
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        text: async () => "UNRELATEDSUFFIX0000000000000000000:1",
+        text: () => Promise.resolve("UNRELATEDSUFFIX0000000000000000000:1"),
       }),
     );
     expect(await isPasswordBreached("a-genuinely-unique-passphrase-xyz")).toBe(false);
@@ -88,12 +88,15 @@ describe("isPasswordBreached", () => {
   });
 
   it("fails open (returns false) when the API responds non-OK", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, text: async () => "" }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, text: () => Promise.resolve("") }),
+    );
     expect(await isPasswordBreached("whatever")).toBe(false);
   });
 
   it("never sends the plaintext password to the API (only a k-anonymized hash prefix)", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: () => Promise.resolve("") });
     vi.stubGlobal("fetch", fetchMock);
     await isPasswordBreached("my-secret-password");
     const calledUrl = fetchMock.mock.calls[0]?.[0] as string;

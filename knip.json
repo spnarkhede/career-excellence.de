@@ -1,11 +1,28 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "ignoreDependencies": [
-    "lint-staged",
     // Used only via `declare module "express-serve-static-core"` augmentation (no
     // import statement for knip to see) — see apps/api/src/common/request-id.middleware.ts
     // and apps/api/src/auth/session.guard.ts.
-    "@types/express-serve-static-core"
+    "@types/express-serve-static-core",
+    // Phase 1's ARCHITECTURE.md explicitly documents these as required-by-stack but
+    // not yet wired to any real usage (TanStack Query/Zustand client state, a typed
+    // api-client in apps/admin, @saas/contracts DTOs in apps/api, @saas/authorization
+    // UI helpers in apps/admin, lucide-react icons, @saas/types in packages/auth,
+    // @prisma/client's own re-export in packages/database) — documented, reserved
+    // dependencies for features planned but not yet built, per docs/auth/FINDINGS.md's
+    // Phase 2 knip finding and docs/auth/ARCHITECTURE.md §1.1/§1.7. Not dead code to
+    // delete; removing them would just force a later phase to re-add the exact same
+    // line. Re-audit this list whenever a phase actually wires one of these in.
+    "@tanstack/react-query",
+    "zustand",
+    "zod",
+    "@saas/api-client",
+    "@saas/authorization",
+    "@saas/contracts",
+    "@saas/types",
+    "@prisma/client",
+    "lucide-react"
   ],
   "workspaces": {
     ".": {
@@ -13,15 +30,37 @@
       "project": ["scripts/**/*.ts"]
     },
     "apps/web": {
-      "entry": ["src/app/**/{page,layout,route,middleware}.{ts,tsx}"],
+      "entry": [
+        "src/app/**/{page,layout,route,middleware}.{ts,tsx}",
+        // Reserved, symmetric public API (requireUser/requirePermission exported
+        // together; only requireUser has a caller today — see docs/auth/COMPONENTS.md's
+        // Phase 10 entry) and the public env loader's validation-at-import side effect
+        // (docs/auth/ARCHITECTURE.md's public/private config split) — both are
+        // intentional public surface for not-yet-written pages, not dead code.
+        "src/lib/require-user.ts",
+        "src/lib/env.ts",
+        // AuthStatus is the hook's canonical public status-union type — reserved for
+        // a future typed consumer, not dead code.
+        "src/components/auth-provider.tsx"
+      ],
       "project": ["src/**/*.{ts,tsx}"]
     },
     "apps/admin": {
-      "entry": ["src/app/**/{page,layout,route,middleware}.{ts,tsx}"],
+      "entry": [
+        "src/app/**/{page,layout,route,middleware}.{ts,tsx}",
+        "src/lib/require-user.ts",
+        "src/lib/env.ts"
+      ],
       "project": ["src/**/*.{ts,tsx}"]
     },
     "apps/api": {
-      "entry": ["src/main.ts", "test/**/*.spec.ts"],
+      "entry": [
+        "src/main.ts",
+        "test/**/*.spec.ts",
+        // AuthErrorCode is the catalog's canonical public type (docs/auth/ERRORS.md) —
+        // reserved for a future typed consumer, not dead code.
+        "src/common/error-catalog.ts"
+      ],
       "project": ["src/**/*.ts", "test/**/*.ts"]
     },
     "apps/worker": {

@@ -11,7 +11,7 @@ export interface FeatureFlagProvider {
 export class StaticFeatureFlagProvider implements FeatureFlagProvider {
   constructor(private flags: Record<string, boolean> = {}) {}
 
-  async isEnabled(key: string): Promise<boolean> {
-    return this.flags[key] ?? false;
+  isEnabled(key: string): Promise<boolean> {
+    return Promise.resolve(this.flags[key] ?? false);
   }
 }

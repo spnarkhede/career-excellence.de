@@ -18,6 +18,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "server-only": "^0.0.1",
     "@prisma/client": "^6.1.0",
     "@saas/security": "workspace:*"
   },

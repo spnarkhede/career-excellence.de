@@ -2,7 +2,7 @@ import { prisma } from "@saas/database";
 import { UnauthorizedException, HttpException } from "@nestjs/common";
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { AuthService } from "../src/auth/auth.service.js";
-import { AUTH_ERROR_CATALOG } from "../src/common/error-catalog.js";
+import { AUTH_ERROR_CATALOG, type AuthErrorCode } from "../src/common/error-catalog.js";
 import { cleanupTestUsers, isDatabaseReachable } from "./db-test-helpers.js";
 
 /**
@@ -115,6 +115,6 @@ describe("Error catalog entries, triggered for real against a live database", ()
     // the point of this test is that it is NEVER an uncoded generic 401.
     const code = extractCode(err);
     expect(["SESSION_EXPIRED", "SESSION_REVOKED", "INVALID_TOKEN"]).toContain(code);
-    expect(code && AUTH_ERROR_CATALOG[code]).toBeDefined();
+    expect(code && AUTH_ERROR_CATALOG[code as AuthErrorCode]).toBeDefined();
   });
 });

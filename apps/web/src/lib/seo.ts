@@ -11,7 +11,7 @@ export function siteUrl(): string {
   return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 }
 
-export function absoluteUrl(path: string): string {
+function absoluteUrl(path: string): string {
   return new URL(path, siteUrl()).toString();
 }
 

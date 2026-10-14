@@ -1,4 +1,4 @@
-import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
@@ -6,8 +6,26 @@ import { assertNoPublicSecretLeakage } from "./guard";
 
 export { assertNoPublicSecretLeakage } from "./guard";
 
+/** Walks up from `startDir` looking for the repo's pnpm workspace marker — avoids
+ * `import.meta.url` (Phase 18 checklist item 16/finding: that syntax is only legal
+ * under an ESM/NodeNext module target, which conflicts with apps/api's required
+ * CommonJS target for NestJS decorators, and previously broke `nest build`'s real
+ * emit, not just `tsc --noEmit`, once Prisma client generation stopped masking it).
+ * `process.cwd()` is reliable here because every consumer (`next dev`/`next build`,
+ * `nest build`, `tsx watch`) is invoked with the package directory as cwd. */
+function findRepoRoot(startDir: string): string {
+  let dir = startDir;
+  for (let i = 0; i < 10; i++) {
+    if (existsSync(path.join(dir, "pnpm-workspace.yaml"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // reached filesystem root without finding it
+    dir = parent;
+  }
+  return startDir; // fallback: dotenv silently no-ops if the path doesn't exist
+}
+
 // Next.js auto-loads .env files; plain Node entrypoints (apps/api, apps/worker) need this.
-const repoRoot = path.resolve(fileURLToPath(import.meta.url), "../../../..");
+const repoRoot = findRepoRoot(process.cwd());
 loadDotenv({ path: path.join(repoRoot, ".env") });
 
 /**

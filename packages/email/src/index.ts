@@ -1,3 +1,5 @@
+import "server-only"; // fails the build if ever imported into a Next.js client bundle
+
 export interface SendEmailInput {
   to: string;
   subject: string;
@@ -11,8 +13,9 @@ export interface EmailProvider {
 
 /** Logs emails instead of sending them. Used in local development and tests. */
 export class StubEmailProvider implements EmailProvider {
-  async send(input: SendEmailInput): Promise<void> {
+  send(input: SendEmailInput): Promise<void> {
     console.warn(`[email:stub] to=${input.to} subject="${input.subject}"`);
+    return Promise.resolve();
   }
 }
 

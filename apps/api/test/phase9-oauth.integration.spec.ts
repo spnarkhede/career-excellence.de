@@ -20,7 +20,7 @@ function fakeAdapter(
     name: "fake",
     callbackMethod,
     buildAuthorizationUrl: () => "https://fake.test/authorize",
-    resolveIdentity: async () => identity,
+    resolveIdentity: () => Promise.resolve(identity),
   };
 }
 
@@ -455,9 +455,7 @@ describe("Phase 9: OAuth and social login (real database, mocked providers)", ()
       name: "fake",
       callbackMethod: "GET",
       buildAuthorizationUrl: () => "https://fake.test/authorize",
-      resolveIdentity: async () => {
-        throw new Error("simulated provider outage");
-      },
+      resolveIdentity: () => Promise.reject(new Error("simulated provider outage")),
     };
     const oauth = makeOAuthService(failingAdapter);
 

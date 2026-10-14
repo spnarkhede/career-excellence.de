@@ -1,3 +1,4 @@
+import "server-only"; // fails the build if ever imported into a Next.js client bundle
 import { PrismaClient } from "../generated/client/index.js";
 
 declare global {

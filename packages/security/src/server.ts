@@ -1,3 +1,4 @@
+import "server-only"; // fails the build if ever imported into a Next.js client bundle
 import argon2 from "argon2";
 import { createHash, createHmac } from "node:crypto";
 

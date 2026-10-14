@@ -133,6 +133,7 @@
             |-- phase14-analytics-events.spec.ts
             |-- phase14-contact-spam.spec.ts
             |-- phase14-terms-acceptance.spec.ts
+            |-- phase17-race-conditions.integration.spec.ts
             |-- phase4-signup-verification.integration.spec.ts
             |-- phase5-login.integration.spec.ts
             |-- phase6-otp.integration.spec.ts
@@ -153,6 +154,7 @@
         |-- .turbo
             |-- turbo-build.log
             |-- turbo-lint.log
+            |-- turbo-test.log
             |-- turbo-typecheck.log
         |-- Dockerfile
         |-- next-env.d.ts
@@ -229,6 +231,7 @@
                     |-- page.tsx
             |-- components
                 |-- analytics-bootstrap.tsx
+                |-- auth-provider.spec.tsx
                 |-- auth-provider.tsx
                 |-- cookie-consent-banner.tsx
                 |-- footer.tsx
@@ -243,6 +246,7 @@
         |-- tailwind.config.mjs
         |-- tsconfig.json
         |-- tsconfig.tsbuildinfo
+        |-- vitest.config.mts
     |-- worker
         |-- .turbo
             |-- turbo-build.log
@@ -276,6 +280,7 @@
     |-- auth
         |-- ARCHITECTURE.md
         |-- COMPONENTS.md
+        |-- EDGE_CASES.md
         |-- ERRORS.md
         |-- FINDINGS.md
         |-- FLOWS.md
@@ -585,6 +590,7 @@
         |-- phase14-legal-consent.spec.ts
         |-- phase15-seo-sharing.spec.ts
         |-- phase16-images-speed-contrast-mobile.spec.ts
+        |-- phase17-race-conditions.spec.ts
         |-- smoke.spec.ts
         |-- tsconfig.json
 |-- tsconfig.base.json

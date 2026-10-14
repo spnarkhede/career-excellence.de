@@ -33,6 +33,7 @@
     "check:links": "linkinator \"**/*.md\" --markdown --recurse --skip \"node_modules|CHANGELOG.md\"",
     "lhci": "lhci autorun",
     "release": "node scripts/release.mjs",
+    "precommit": "lint-staged",
     "prepare": "husky"
   },
   "devDependencies": {
